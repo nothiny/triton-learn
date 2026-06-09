@@ -197,6 +197,190 @@ Flash Attention v1 (Triton, N=4096):
 
 ---
 
+## 案例 5: RMSNorm — 去掉均值计算，但还有优化空间
+
+### 初始状态
+
+```python
+# Naive RMSNorm: 2-pass
+#   pass 1: 读 x → 算 rms = sqrt(mean(x²))
+#   pass 2: 读 x → 归一化 + affine
+
+# RMSNorm 比 LayerNorm 简单（不需要算 mean）
+
+问题规模: N_ROWS=4096, N_COLS=4096
+实测: 71.2 GB/s bandwidth, 3.6% H100 HBM peak
+```
+
+### 诊断
+
+```
+ncu 分析:
+  Memory Throughput: 28%
+  Compute Throughput: 2%
+  
+问题: 仍然是 memory-bound。2 次 HBM 遍历。
+每个元素: 读 2 次 + 写 1 次 = 3 次 HBM 访问
+```
+
+### 优化步骤
+
+```
+Step 1 — 基础实现 (2-pass):
+  71.2 GB/s, 3.6% peak
+
+Step 2 — 融合 rms 计算和归一化到 1-pass:
+  将 rms 的中间结果保存在寄存器中，不再写回 HBM
+  但 normalization 仍需要第 2 次遍历
+  
+  结果: 105.8 GB/s, 5.3% peak (+47%)
+
+Step 3 — 与后续操作融合（如果有 Linear 层）:
+  将 RMSNorm + Linear 融合为一个 kernel
+  → 完全消除 HBM round-trip
+  → 这是 Liger Kernel 的关键优化
+  
+  Liger RMSNorm: ~380 GB/s, 19% peak
+  (vs 我们的 2-pass: 71 GB/s)
+```
+
+### 关键教训
+
+```
+1. RMSNorm 比 LayerNorm 快约 1.3×（少算 mean）
+2. 真正的优化在于 fusion: RMSNorm + Linear 融合 → 1 次 HBM 遍历
+3. 单 kernel RMSNorm 的最大瓶颈是 HBM 带宽 — 无法突破
+```
+
+---
+
+## 案例 6: SwiGLU — 从分离到融合
+
+### 概念
+
+```
+SwiGLU(x) = SiLU(gate) ⊙ up
+
+其中:
+  gate = x @ W_gate.T    (Linear)
+  up   = x @ W_up.T      (Linear)
+  SiLU(z) = z * sigmoid(z)  (elementwise)
+
+标准实现: 3 个 kernel
+  1. Linear: gate = x @ W_gate.T
+  2. Linear: up = x @ W_up.T
+  3. SiLU + multiply: result = (gate * sigmoid(gate)) * up
+
+问题: gate 和 up 写回 HBM → 再从 HBM 读回做 elementwise
+```
+
+### 优化
+
+```python
+# Fused SwiGLU: 单 kernel 完成 gate/up 的 GEMM + SiLU + multiply
+
+@triton.jit
+def fused_swiglu_kernel(
+    x_ptr, w_gate_ptr, w_up_ptr, out_ptr,
+    M, N, K,
+    # ... strides, BLOCK sizes
+):
+    """
+    result = (gate * sigmoid(gate)) * up
+    其中 gate 和 up 在 kernel 内计算，不写回 HBM
+    """
+    pid_m = tl.program_id(0)
+    offs_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    offs_n = tl.arange(0, BLOCK_N)
+    offs_k = tl.arange(0, BLOCK_K)
+    
+    # 两个累加器: gate 和 up
+    acc_gate = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
+    acc_up = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
+    
+    for k in range(0, K, BLOCK_K):
+        # Load x tile (复用于 gate 和 up)
+        x = tl.load(x_ptr + offs_m[:, None] * K + 
+                     (k + offs_k)[None, :], ...)
+        
+        # Load W_gate tile → compute gate
+        w_g = tl.load(w_gate_ptr + offs_n[None, :] * K +
+                       (k + offs_k)[:, None], ...)
+        acc_gate += tl.dot(x, w_g)
+        
+        # Load W_up tile → compute up
+        w_u = tl.load(w_up_ptr + offs_n[None, :] * K +
+                       (k + offs_k)[:, None], ...)
+        acc_up += tl.dot(x, w_u)
+    
+    # SiLU: z * sigmoid(z)
+    # Triton 没有内置 sigmoid → 用 exp 实现
+    sigmoid_gate = 1.0 / (1.0 + tl.exp(-acc_gate))
+    silu = acc_gate * sigmoid_gate
+    
+    # Elementwise multiply
+    result = silu * acc_up
+    
+    tl.store(out_ptr + ..., result, ...)
+
+
+# 对比:
+
+# 标准实现:
+#   gate = linear(x, w_gate)         # GEMM → write HBM (M×N fp16)
+#   up = linear(x, w_up)             # GEMM → write HBM (M×N fp16)
+#   result = silu(gate) * up          # read gate, read up → write HBM (M×N fp16)
+#   总 HBM 流量: ~5 × M×N × 2 bytes
+
+# Fused:
+#   result = fused_swiglu(x, w_gate, w_up)
+#   总 HBM 流量: 1 × (M×K) + 2 × (K×N) + 1 × (M×N) ≈ 远小于 unfused
+```
+
+### 性能对比
+
+```
+标准实现 (3 kernels):
+  Time: 1.89 ms
+  HBM traffic: ~50 MB
+
+Fused SwiGLU:
+  Time: 0.95 ms
+  HBM traffic: ~25 MB
+
+加速: 2.0×（主要来自减少了 HBM round-trip）
+```
+
+### Liger Kernel 对比
+
+```
+Liger 的 SwiGLU:
+  - 用 chunked 策略: 把大矩阵切分成多个 chunk
+  - 每个 chunk 独立做 GEMM + SiLU + multiply
+  - 进一步减少显存峰值
+  
+  Liger SwiGLU 比我们的 fused 版本快 ~1.2×
+  （更好的 tiling 和 register management）
+```
+
+### 关键教训
+
+```
+1. 对于激活函数（SiLU, GELU, ReLU）:
+   → 总是在 GEMM 后面紧接着做 elementwise op
+   → 节省一次 HBM round-trip
+
+2. 当两个 GEMM 共享同一个输入 x:
+   → 可以将它们融合为一个 kernel
+   → x 只读一次 → 减少数据搬运
+
+3. 内存带宽是扩展瓶颈:
+   → fused kernel 的收益来自减少 HBM 流量
+   → 对 memory-bound 的操作特别有效
+```
+
+---
+
 ## 5. 优化方法论总结
 
 ### 通用优化流程

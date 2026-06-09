@@ -543,6 +543,161 @@ grep ".reg" ~/.triton/cache/*.ptx | wc -l  # 寄存器使用量
 
 ---
 
+## 7. 实战：写一个自定义 MLIR Pass（配合 `phase3_compiler/custom_pass/`）
+
+### 7.1 为什么需要自定义 Pass？
+
+```
+Triton 的内置 passes 覆盖了大多数场景，但有时你需要:
+
+1. 实验性优化: "如果我把这两个 op 融合，会快多少？"
+2. 调试: 在特定 pass 前后注入 IR dump
+3. 分析: 统计 kernel 中某种 op 的数量、shared memory 使用
+
+Triton 提供了 Python API 来注册自定义 pass。
+```
+
+### 7.2 自定义 Pass 的基本框架
+
+```python
+# phase3_compiler/custom_pass/my_pass.py
+
+from triton.compiler import passes
+
+@passes.register_pass("my_custom_pass")
+def my_pass(module):
+    """
+    一个最简单的自定义 pass: 打印 module 中所有的 op 名称。
+    
+    module: triton MLIR module (可以像 Python 对象一样遍历)
+    """
+    # 遍历 module 中的所有函数
+    for func in module.body:
+        if hasattr(func, 'body'):
+            print(f"Function: {func.name}")
+            # 遍历函数中的所有 op
+            for op in func.body:
+                print(f"  {op.name}: {op.operands}")
+
+# 注册后，使用环境变量启用:
+# TRITON_CUSTOM_PASSES=my_custom_pass python my_kernel.py
+```
+
+### 7.3 实际的简单 Pass: 统计 Shared Memory 使用
+
+```python
+@passes.register_pass("estimate_shared_mem")
+def estimate_shared_mem_pass(module):
+    """
+    估计 kernel 的 shared memory 用量。
+    
+    遍历所有 ttg.convert_layout op（这些可能导致 shared memory round-trip），
+    估算每个 convert 需要的 shared memory 字节数。
+    """
+    total_shared_bytes = 0
+    
+    for func in module.body:
+        for block in func.body:
+            for op in block:
+                # 找 load 操作（可能产生 shared memory staging）
+                if "load" in str(op.name):
+                    result_type = op.result.type
+                    if hasattr(result_type, 'shape'):
+                        # 估算 tile 大小
+                        shape = result_type.shape
+                        dtype_size = 2  # 假设 fp16
+                        tile_bytes = 1
+                        for dim in shape:
+                            tile_bytes *= dim
+                        tile_bytes *= dtype_size
+                        total_shared_bytes += tile_bytes
+                        print(f"  [{op.name}] tile: {shape}, "
+                              f"approx {tile_bytes} bytes")
+    
+    print(f"\n[Shared Memory Estimate] ~{total_shared_bytes / 1024:.1f} KB per block")
+```
+
+### 7.4 更高级: 分析 Kernel 的 Arithmetic Intensity
+
+```python
+@passes.register_pass("analyze_arith_intensity")
+def analyze_arith_intensity(module):
+    """
+    统计 kernel 的 FLOPs 和 HBM 访问量，计算算术强度。
+    
+    简单实现: 统计 load/store 数量（HBM 访问）和 dot（compute）。
+    """
+    num_loads = 0
+    num_stores = 0
+    num_mma_ops = 0
+    
+    def count_ops(op):
+        nonlocal num_loads, num_stores, num_mma_ops
+        name = str(op.name)
+        if "load" in name:
+            num_loads += 1
+        elif "store" in name:
+            num_stores += 1
+        elif "dot" in name or "mma" in name:
+            num_mma_ops += 1
+    
+    for func in module.body:
+        for block in func.body:
+            for op in block:
+                count_ops(op)
+    
+    total_hbm_bytes = (num_loads + num_stores) * 128 * 64 * 2  # rough estimate
+    total_flops = num_mma_ops * 2 * 16 * 8 * 16  # 2×M×N×K per MMA
+    
+    ai = total_flops / total_hbm_bytes if total_hbm_bytes > 0 else float('inf')
+    
+    print(f"Loads: {num_loads}, Stores: {num_stores}, MMA ops: {num_mma_ops}")
+    print(f"Estimated FLOPs: {total_flops:,}")
+    print(f"Estimated HBM bytes: {total_hbm_bytes:,}")
+    print(f"Arithmetic Intensity: {ai:.1f} FLOP/byte")
+```
+
+### 7.5 如何运行自定义 Pass
+
+```bash
+# 方法 1: 环境变量
+TRITON_CUSTOM_PASSES=my_custom_pass,estimate_shared_mem python my_kernel.py
+
+# 方法 2: 在代码中注册
+# 只需 import 你的 pass 文件，pass 会被自动注册
+import phase3_compiler.custom_pass.my_pass
+# 然后正常运行 kernel
+
+# 方法 3: 配合 IR dump 使用
+TRITON_KERNEL_DUMP=1 TRITON_CUSTOM_PASSES=analyze_arith_intensity python my_kernel.py
+# 可以同时看到 IR dump 和你的 pass 输出
+```
+
+### 7.6 Triton Pass 系统的限制
+
+```
+当前 (Triton 3.x) 的限制:
+
+1. Python pass API 仍在发展中
+   → 不是所有 triton.compiler.passes 都暴露给 Python
+   → 复杂的 pass 可能需要 C++ 实现
+
+2. 不能修改 IR 结构（只读分析是安全的）
+   → Python pass 主要用于分析和 debug
+   → 修改 IR 需要深入了解 Triton 的 MLIR 绑定
+
+3. Pass 顺序是固定的
+   → 你不能重新排序 passes
+   → 自定义 pass 被插入到固定位置
+
+对于真正的 pass 开发:
+  → 需要 fork triton 源码
+  → 用 C++ 写 MLIR pass（lib/Conversion/ 下）
+  → 重新编译 triton
+```
+
+---
+
 ## 参考资料
 
 - [MLIR Documentation](https://mlir.llvm.org/docs/)

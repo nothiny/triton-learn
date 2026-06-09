@@ -24,24 +24,32 @@
 |---|------|------|----------|----------|
 | 7 | `08_gemm_advanced.md` | GEMM 优化进阶：warp tiling/pipeline/swizzling | 45 min | 00-03 |
 | 8 | `09_tensor_core_deep.md` | Tensor Core 深入：MMA 指令、FP8、sparsity | 30 min | 00, 03 |
-| 9 | `12_optimization_cases.md` | 真实优化案例：从 30% 到 80% peak | 30 min | 02, 08 |
+| 9 | `12_optimization_cases.md` | 真实优化案例：GEMM/Softmax/LN/RMSNorm/SwiGLU | 45 min | 02, 08 |
+| 10 | `16_autotuning_strategy.md` | Autotuning 策略：搜索空间设计、Prune、Key 选择 | 30 min | 01 |
+| 11 | `18_numerical_precision.md` | 数值精度：fp32/fp16/bf16/tf32/fp8 选择指南 | 30 min | 01 |
+
+### 实践篇（反向传播与集成）
+
+| # | 文件 | 内容 | 预计时间 | 前置知识 |
+|---|------|------|----------|----------|
+| 12 | `17_triton_autograd.md` | Triton 反向传播：写 Backward + Autograd 集成 | 45 min | 01 + PyTorch 基础 |
 
 ### 扩展篇（架构与迁移）
 
 | # | 文件 | 内容 | 预计时间 | 前置知识 |
 |---|------|------|----------|----------|
-| 10 | `10_hopper_architecture.md` | Hopper (H100) 架构：wgmma/TMA/FP8/cluster | 30 min | 00, 09 |
-| 11 | `11_cuda_to_triton.md` | CUDA → Triton 迁移指南：概念映射、代码翻译 | 20 min | 01 + CUDA 经验 |
-| 12 | `14_kernel_patterns.md` | 常见 Kernel 模式：reduce/scan/gather/conv | 30 min | 01, 02 |
+| 13 | `10_hopper_architecture.md` | Hopper (H100) 架构：wgmma/TMA/FP8/cluster | 30 min | 00, 09 |
+| 14 | `11_cuda_to_triton.md` | CUDA → Triton 迁移指南：概念映射、代码翻译 | 20 min | 01 + CUDA 经验 |
+| 15 | `14_kernel_patterns.md` | 常见 Kernel 模式：reduce/scan/gather/conv | 30 min | 01, 02 |
 
 ### 参考篇（按需查阅）
 
 | # | 文件 | 内容 | 预计时间 | 前置知识 |
 |---|------|------|----------|----------|
-| 13 | `13_triton_internals.md` | Triton 内部：JIT/Cache/driver API | 20 min | 03 |
-| 14 | `04_cute_preview.md` | CuTe 预览：Layout 代数、MMA Atom | 20 min | 学完 Phase 1-2 后 |
-| 15 | `05_benchmarking_methodology.md` | Benchmark 方法论：正确测量 GPU 性能 | 30 min | 01 |
-| 16 | `15_multi_gpu.md` | Multi-GPU：NVLink/all-reduce/tensor parallelism | 20 min | 01 |
+| 16 | `13_triton_internals.md` | Triton 内部：JIT/Cache/driver API | 20 min | 03 |
+| 17 | `04_cute_preview.md` | CuTe 预览：Layout 代数、MMA Atom | 20 min | 学完 Phase 1-2 后 |
+| 18 | `05_benchmarking_methodology.md` | Benchmark 方法论：正确测量 GPU 性能 | 30 min | 01 |
+| 19 | `15_multi_gpu.md` | Multi-GPU：NVLink/all-reduce/tensor parallelism | 20 min | 01 |
 
 ## 怎么用
 
@@ -50,3 +58,5 @@
 - **零基础友好**：00-02 从头讲起，不需要任何 GPU 前置知识
 - **03 是最重要的**：`03_triton_compiler_pipeline.md` 是整个项目的精华
 - **06 是最实用的**：开发过程中遇到 bug 优先看 `06_debugging_triton.md`
+- **18 是精度选择**：`18_numerical_precision.md` 帮你决定什么时候用 fp16/bf16/fp8
+- **16 是 autotune 策略**：`16_autotuning_strategy.md` 教你设计高效的搜索空间
