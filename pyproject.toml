@@ -1,0 +1,54 @@
+[project]
+name = "triton-kernels"
+version = "0.1.0"
+description = "Systematic GPU kernel learning project — Triton-first, compiler-aware, CuTe-ready"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "triton==3.6.0",
+    "torch==2.11.0+cu128",
+    "numpy>=1.24",
+    "matplotlib>=3.7",
+    "liger-kernel>=0.8.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-benchmark>=4.0",
+    "black>=24.0",
+    "ruff>=0.4",
+]
+bench = [
+    "matplotlib>=3.7",
+    "pandas>=2.0",
+]
+sota = [
+    "flash-attn>=2.0",
+    "liger-kernel>=0.5",
+    "xformers>=0.0.22",
+]
+[tool.uv.extra-build-dependencies]
+flash-attn = ["torch"]
+liger-kernel = ["torch"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = ["-v", "--tb=short", "--strict-markers"]
+markers = [
+    "gpu: tests that require a CUDA-capable GPU",
+    "slow: tests that take >10s",
+]

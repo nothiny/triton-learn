@@ -1,0 +1,56 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+
+# Triton cache
+triton_cache/
+
+# Generated IR / PTX
+*.ptx
+*.ll
+*.mlir
+
+# Reports
+reports/
+
+# Testing
+.pytest_cache/
+htmlcov/
+.coverage
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Profiler traces
+traces/
+
+# Benchmark results (keep directory, ignore JSON)
+benchmarks/results/*.json
+!benchmarks/results/.gitkeep
+
+# Jupyter
+.ipynb_checkpoints/
+
+# macOS
+.DS_Store
+
+# Editor
+*.swp
+*.swo
+*~
