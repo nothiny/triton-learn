@@ -60,3 +60,37 @@
 - **06 是最实用的**：开发过程中遇到 bug 优先看 `06_debugging_triton.md`
 - **18 是精度选择**：`18_numerical_precision.md` 帮你决定什么时候用 fp16/bf16/fp8
 - **16 是 autotune 策略**：`16_autotuning_strategy.md` 教你设计高效的搜索空间
+
+---
+
+## 待写内容
+
+> 📋 下面是计划中但尚未完成的笔记，欢迎贡献。
+
+### 高优先级（实战价值高）
+
+| # | 主题 | 内容预告 | 为什么重要 |
+|---|------|---------|-----------|
+| 20 | **端到端实战：Transformer Block** | 把 GEMM + Flash Attention + LayerNorm + SwiGLU 串联成一个完整的 LLM 前向 pass，展示 kernel fusion 的端到端效果 | 学了那么多 kernel，是时候串起来了 |
+| 21 | **性能剖析深入：ncu/nsys 完全指南** | 逐 section 解读 ncu 输出、Nsight Systems 时间线分析、Source/PTX/SASS 关联查看、Roofline 交互式分析 | 会看 profile 才能找到真正的瓶颈 |
+| 22 | **LLM 推理优化专题** | KV cache 管理、Continuous Batching、量化部署（GPTQ/AWQ/GGUF）、Speculative Decoding 的 Triton 实现 | Triton 最热门的应用场景 |
+| 23 | **Attention 变体实现** | GQA (Grouped Query Attention)、MQA (Multi-Query Attention)、Sliding Window Attention、PagedAttention | 现代 LLM 的核心注意力机制 |
+
+### 中优先级（深入理解）
+
+| # | 主题 | 内容预告 | 为什么重要 |
+|---|------|---------|-----------|
+| 24 | **GPU 架构演进史** | Kepler → Maxwell → Pascal → Volta → Ampere → Hopper → Blackwell，每一代的关键创新和编程模型变化 | 理解硬件设计决策，预测未来趋势 |
+| 25 | **Triton 源码导读** | `lib/Dialect/`, `lib/Conversion/`, `python/triton/compiler/` 的代码结构和关键函数 | 想给 Triton 提 PR 或深入 debug 的必备 |
+| 26 | **Sparse Computing 专题** | 2:4 结构化稀疏、Block Sparse、Sparse Flash Attention、Triton 的稀疏计算支持 | 未来方向——稀疏是通往更快计算的路径 |
+
+### 低优先级（扩展视野）
+
+| # | 主题 | 内容预告 | 为什么重要 |
+|---|------|---------|-----------|
+| 27 | **Triton vs TVM vs Halide vs MLIR** | 四个 DSL/编译器框架的对比：设计哲学、IR 设计、codegen 质量、适用场景 | 做编译器研究或选型时的参考 |
+| 28 | **Debug 进阶：PTX/SASS 级别调优** | 手写 PTX、SASS 指令级优化、寄存器分配干预、cuobjdump 分析 | 追求最后 5-10% 性能的终极手段 |
+| 29 | **CuTe 实战：第一个 CuTe GEMM** | 从零写一个 CUTLASS 3.x CuTe GEMM，对比 Triton 实现 | Phase 4 的核心内容 |
+| 30 | **Triton Kernel 安全性** | 越界访问检测、UB (undefined behavior) 分析、race condition 排查、fuzzing | 生产环境部署前的最后防线 |
+
+> 💡 **贡献方式**：挑一个主题，按现有笔记的格式（目标读者 + 新手友好 + 🔧 编译器视角 + 参考资料）写成 Markdown，放到 `notes/` 目录下。
