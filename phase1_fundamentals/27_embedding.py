@@ -1,5 +1,5 @@
 """
-22_embedding.py — Embedding Lookup / Gather kernel
+27_embedding.py — Embedding Lookup / Gather kernel
 
 学习目标：
   - 理解 embedding lookup 在 GPU 上的内存访问模式
@@ -20,7 +20,7 @@
   - 缓存命中率低 (vocab_size >> L2 cache)
   - 优化方向: 利用 shared memory cache 频繁访问的 token
 
-运行: python phase1_fundamentals/22_embedding.py
+运行: python phase1_fundamentals/27_embedding.py
 """
 
 import sys
@@ -85,7 +85,7 @@ def embedding(weight: torch.Tensor, ids: torch.Tensor) -> torch.Tensor:
 
 def main():
     print("=" * 60)
-    print("22_embedding — Embedding Lookup / Gather")
+    print("27_embedding — Embedding Lookup / Gather")
     print("=" * 60)
 
     if torch.cuda.is_available():

@@ -16,7 +16,7 @@ Welford 算法 (在线计算方差，无需两次遍历):
   S_k = S_{k-1} + (x_k - M_{k-1}) * (x_k - M_k)
   → μ = M_n, σ² = S_n / n
 
-运行: python phase1_fundamentals/16_layer_norm.py
+运行: python phase1_fundamentals/21_layer_norm.py
 """
 
 import sys

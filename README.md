@@ -31,23 +31,23 @@ make test               # CPU 测试
 ## 学习路线图
 
 ```
-Phase 1: Fundamentals (23 kernels)    Phase 2: Compute             Phase 3: Compiler          Phase 4: cuTile
+Phase 1: Fundamentals (28 kernels)    Phase 2: Compute             Phase 3: Compiler          Phase 4: cuTile
 ┌──────────────────────────┐         ┌─────────────────┐          ┌─────────────────┐        ┌─────────────────┐
 │ Group 1: Basics (01-03)   │         │ 01_matmul_naive  │          │ 01_dump_ir       │        │ cuTile vs Triton │
 │ Group 2: Fusion (04-06)   │ ──────▶ │ 02_matmul_tiled  │ ──────▶ │ 02_layout_analysis│──────▶ │ 对比分析         │
 │ Group 3: Activations (07-09)│       │ 03_autotuned     │          │ 03_custom_pass    │        │ Tile IR 理解     │
 │ Group 4: Gated (10-11)    │         │ 04_flash_attn_v1 │          │ 04_ptx_analysis   │        │                 │
-│ Group 5: Reductions (12-15)│        │ 05_flash_attn_v2 │          │                   │        │                 │
+│ Group 5: Reductions (12-20)│        │ 05_flash_attn_v2 │          │                   │        │                 │
 │ Group 6: Normalizations    │        │ 06_depthwise_conv│          └─────────────────┘        └─────────────────┘
-│         (16-20)            │        └─────────────────┘                ~1-2 周                   ~待扩展
-│ Group 7: Embed/Optim (21-23)│              ~2-3 周
+│         (21-25)            │        └─────────────────┘                ~1-2 周                   ~待扩展
+│ Group 7: Embed/Optim (26-28)│              ~2-3 周
 └──────────────────────────┘
           ~2-3 周
 ```
 
 ---
 
-## Phase 1 — Triton 基础 (23 kernels, 7 个学习组)
+## Phase 1 — Triton 基础 (28 kernels, 7 个学习组)
 
 **目标**: 用 Triton 写出 production-quality 的 elementwise + reduction + normalization kernel。
 
@@ -82,32 +82,37 @@ Phase 1: Fundamentals (23 kernels)    Phase 2: Compute             Phase 3: Comp
 | 10 | `10_swiglu.py` | SwiGLU | Fused `gate·SiLU(up)`, Llama FFN | ⭐⭐ |
 | 11 | `11_geglu.py` | GeGLU | Fused `gate·GELU(up)`, 对比 SwiGLU | ⭐⭐ |
 
-### Group 5: Reductions (12-15)
+### Group 5: Reductions (12-20)
 
 | # | 文件 | Kernel | 关键概念 | 难度 |
 |---|------|--------|----------|:--:|
-| 12 | `12_fused_softmax.py` | Fused Softmax | max+sum reduction, online algorithm | ⭐⭐ |
-| 13 | `13_cross_entropy.py` | Cross Entropy Loss | log_softmax, max-subtraction trick | ⭐⭐⭐ |
-| 14 | `14_cumsum.py` | Cumsum / Prefix Scan | Block-level scan, cross-block carry | ⭐⭐⭐ |
-| 15 | `15_gradient_clipping.py` | Gradient Clipping | `tl.atomic_add`, 全局 norm reduction | ⭐⭐ |
+| 12 | `12_vector_sum.py` | Vector Sum | `tl.sum`, atomic_add reduction | ⭐ |
+| 13 | `13_vector_max.py` | Vector Max | `tl.max`, atomic_max | ⭐ |
+| 14 | `14_vector_norm_l2.py` | L2 Vector Norm | sum(x²)+sqrt, compute+reduce | ⭐ |
+| 15 | `15_welford_mean_var.py` | Welford Mean+Var | 1-pass online algorithm | ⭐⭐⭐ |
+| 16 | `16_logsumexp.py` | Row-Wise LogSumExp | max-subtraction, softmax 对数版 | ⭐⭐ |
+| 17 | `17_fused_softmax.py` | Fused Softmax | max+sum reduction, online algorithm | ⭐⭐ |
+| 18 | `18_cross_entropy.py` | Cross Entropy Loss | log_softmax, max-subtraction trick | ⭐⭐⭐ |
+| 19 | `19_cumsum.py` | Cumsum / Prefix Scan | Block-level scan, cross-block carry | ⭐⭐⭐ |
+| 20 | `20_gradient_clipping.py` | Gradient Clipping | `tl.atomic_add`, 全局 norm reduction | ⭐⭐ |
 
-### Group 6: Normalizations (16-20)
-
-| # | 文件 | Kernel | 关键概念 | 难度 |
-|---|------|--------|----------|:--:|
-| 16 | `16_layer_norm.py` | Layer Norm | 3-pass: mean→var→norm+affine | ⭐⭐⭐ |
-| 17 | `17_rms_norm.py` | RMS Norm | 2-pass, `tl.math.rsqrt`, Llama norm | ⭐⭐ |
-| 18 | `18_group_norm.py` | Group Norm | 分组 reduction, G=1→LN, G=C→IN | ⭐⭐⭐ |
-| 19 | `19_batch_norm.py` | BatchNorm1D | 跨 sample strided reduction | ⭐⭐⭐ |
-| 20 | `20_residual_add_norm.py` | Residual+LayerNorm | Transformer skip connection fusion | ⭐⭐⭐ |
-
-### Group 7: Position / Embedding / Optimizer (21-23)
+### Group 6: Normalizations (21-25)
 
 | # | 文件 | Kernel | 关键概念 | 难度 |
 |---|------|--------|----------|:--:|
-| 21 | `21_rotary_embedding.py` | Rotary Embedding | Pairwise 2D rotation, RoPE | ⭐⭐ |
-| 22 | `22_embedding.py` | Embedding Lookup | Gather/scatter, 随机访存模式 | ⭐⭐ |
-| 23 | `23_adamw.py` | AdamW Optimizer | 6-in-1 fusion, momentum buffer update | ⭐⭐⭐ |
+| 21 | `21_layer_norm.py` | Layer Norm | 3-pass: mean→var→norm+affine | ⭐⭐⭐ |
+| 22 | `22_rms_norm.py` | RMS Norm | 2-pass, `tl.math.rsqrt`, Llama norm | ⭐⭐ |
+| 23 | `23_group_norm.py` | Group Norm | 分组 reduction, G=1→LN, G=C→IN | ⭐⭐⭐ |
+| 24 | `24_batch_norm.py` | BatchNorm1D | 跨 sample strided reduction | ⭐⭐⭐ |
+| 25 | `25_residual_add_norm.py` | Residual+LayerNorm | Transformer skip connection fusion | ⭐⭐⭐ |
+
+### Group 7: Position / Embedding / Optimizer (26-28)
+
+| # | 文件 | Kernel | 关键概念 | 难度 |
+|---|------|--------|----------|:--:|
+| 26 | `26_rotary_embedding.py` | Rotary Embedding | Pairwise 2D rotation, RoPE | ⭐⭐ |
+| 27 | `27_embedding.py` | Embedding Lookup | Gather/scatter, 随机访存模式 | ⭐⭐ |
+| 28 | `28_adamw.py` | AdamW Optimizer | 6-in-1 fusion, momentum buffer update | ⭐⭐⭐ |
 
 ---
 
@@ -175,7 +180,7 @@ cuTile Python (`cuda-tile` on PyPI) 是 NVIDIA 官方的 GPU kernel 编程语言
 ## Benchmarks — 你的 kernel vs 顶级算子库
 
 ```bash
-make bench-phase1             # Phase 1: 23 kernels (Triton vs PyTorch vs Liger)
+make bench-phase1             # Phase 1: 28 kernels (Triton vs PyTorch vs Liger)
 make bench-matmul             # GEMM: Triton vs cuBLAS vs roofline
 make bench-attn               # Attention: Flash Attn vs SDPA vs naive
 make bench-elem               # Elementwise/norm: Triton vs Liger vs PyTorch
@@ -242,7 +247,7 @@ triton-kernels/
 │   └── test_phase2.py
 │
 └── benchmarks/                  # Benchmark 套件
-    ├── bench_phase1.py          # Phase 1 23 kernel 三向对比
+    ├── bench_phase1.py          # Phase 1 28 kernel 三向对比
     ├── bench_matmul.py          # GEMM standalone
     ├── bench_attention.py       # Attention standalone
     ├── bench_elementwise.py     # Elementwise/norm standalone

@@ -109,7 +109,7 @@ def build_cases() -> list[BenchCase]:
 
     # -- Fused Softmax --
     try:
-        fused_softmax = _load_fn("phase1_fundamentals/12_fused_softmax", "fused_softmax")
+        fused_softmax = _load_fn("phase1_fundamentals/17_fused_softmax", "fused_softmax")
     except Exception:
         fused_softmax = None
 
@@ -172,7 +172,7 @@ def build_cases() -> list[BenchCase]:
 
     # -- Layer Norm --
     try:
-        layer_norm = _load_fn("phase1_fundamentals/16_layer_norm", "layer_norm")
+        layer_norm = _load_fn("phase1_fundamentals/21_layer_norm", "layer_norm")
     except Exception:
         layer_norm = None
 
@@ -212,7 +212,7 @@ def build_cases() -> list[BenchCase]:
 
     # -- RMS Norm --
     try:
-        rms_norm = _load_fn("phase1_fundamentals/17_rms_norm", "rms_norm")
+        rms_norm = _load_fn("phase1_fundamentals/22_rms_norm", "rms_norm")
     except Exception:
         rms_norm = None
 
@@ -337,7 +337,7 @@ def build_cases() -> list[BenchCase]:
 
     # -- Fused Residual Add + LayerNorm --
     try:
-        residual_add_norm = _load_fn("phase1_fundamentals/20_residual_add_norm", "residual_add_norm")
+        residual_add_norm = _load_fn("phase1_fundamentals/25_residual_add_norm", "residual_add_norm")
     except Exception:
         residual_add_norm = None
 
@@ -399,7 +399,7 @@ def build_cases() -> list[BenchCase]:
 
     # -- Cross Entropy Loss --
     try:
-        cross_entropy_loss = _load_fn("phase1_fundamentals/13_cross_entropy", "cross_entropy_loss")
+        cross_entropy_loss = _load_fn("phase1_fundamentals/18_cross_entropy", "cross_entropy_loss")
     except Exception:
         cross_entropy_loss = None
 
@@ -423,8 +423,8 @@ def build_cases() -> list[BenchCase]:
 
     # -- Rotary Position Embedding --
     try:
-        apply_rotary_emb = _load_fn("phase1_fundamentals/21_rotary_embedding", "apply_rotary_emb")
-        precompute_freqs_cis = _load_fn("phase1_fundamentals/21_rotary_embedding", "precompute_freqs_cis")
+        apply_rotary_emb = _load_fn("phase1_fundamentals/26_rotary_embedding", "apply_rotary_emb")
+        precompute_freqs_cis = _load_fn("phase1_fundamentals/26_rotary_embedding", "precompute_freqs_cis")
     except Exception:
         apply_rotary_emb = None
         precompute_freqs_cis = None
@@ -457,7 +457,7 @@ def build_cases() -> list[BenchCase]:
 
     # -- Group Norm --
     try:
-        group_norm = _load_fn("phase1_fundamentals/18_group_norm", "group_norm")
+        group_norm = _load_fn("phase1_fundamentals/23_group_norm", "group_norm")
     except Exception:
         group_norm = None
 

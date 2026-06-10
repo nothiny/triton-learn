@@ -89,24 +89,29 @@ def build_phase1_cases() -> list[dict]:
     geglu = _load_fn("phase1_fundamentals/11_geglu", "geglu")
 
     # Group 5: Reductions
-    fused_softmax = _load_fn("phase1_fundamentals/12_fused_softmax", "fused_softmax")
-    cross_entropy_loss = _load_fn("phase1_fundamentals/13_cross_entropy", "cross_entropy_loss")
-    cumsum_full = _load_fn("phase1_fundamentals/14_cumsum", "cumsum_full")
-    clip_grad_norm = _load_fn("phase1_fundamentals/15_gradient_clipping", "clip_grad_norm")
+    vector_sum = _load_fn("phase1_fundamentals/12_vector_sum", "vector_sum")
+    vector_max = _load_fn("phase1_fundamentals/13_vector_max", "vector_max")
+    vector_norm_l2 = _load_fn("phase1_fundamentals/14_vector_norm_l2", "vector_norm_l2")
+    welford_mean_var = _load_fn("phase1_fundamentals/15_welford_mean_var", "welford_mean_var")
+    logsumexp_row = _load_fn("phase1_fundamentals/16_logsumexp", "logsumexp_row")
+    fused_softmax = _load_fn("phase1_fundamentals/17_fused_softmax", "fused_softmax")
+    cross_entropy_loss = _load_fn("phase1_fundamentals/18_cross_entropy", "cross_entropy_loss")
+    cumsum_full = _load_fn("phase1_fundamentals/19_cumsum", "cumsum_full")
+    clip_grad_norm = _load_fn("phase1_fundamentals/20_gradient_clipping", "clip_grad_norm")
 
     # Group 6: Normalizations
-    layer_norm = _load_fn("phase1_fundamentals/16_layer_norm", "layer_norm")
-    rms_norm = _load_fn("phase1_fundamentals/17_rms_norm", "rms_norm")
-    group_norm = _load_fn("phase1_fundamentals/18_group_norm", "group_norm")
-    batchnorm1d = _load_fn("phase1_fundamentals/19_batch_norm", "batchnorm1d")
-    residual_add_norm = _load_fn("phase1_fundamentals/20_residual_add_norm", "residual_add_norm")
+    layer_norm = _load_fn("phase1_fundamentals/21_layer_norm", "layer_norm")
+    rms_norm = _load_fn("phase1_fundamentals/22_rms_norm", "rms_norm")
+    group_norm = _load_fn("phase1_fundamentals/23_group_norm", "group_norm")
+    batchnorm1d = _load_fn("phase1_fundamentals/24_batch_norm", "batchnorm1d")
+    residual_add_norm = _load_fn("phase1_fundamentals/25_residual_add_norm", "residual_add_norm")
 
     # Group 7: Position / Embedding / Optimizer
-    apply_rotary_emb = _load_fn("phase1_fundamentals/21_rotary_embedding", "apply_rotary_emb")
-    precompute_freqs_cis = _load_fn("phase1_fundamentals/21_rotary_embedding", "precompute_freqs_cis")
-    embedding = _load_fn("phase1_fundamentals/22_embedding", "embedding")
-    adamw_step = _load_fn("phase1_fundamentals/23_adamw", "adamw_step")
-    adamw_pytorch_step = _load_fn("phase1_fundamentals/23_adamw", "adamw_pytorch_step")
+    apply_rotary_emb = _load_fn("phase1_fundamentals/26_rotary_embedding", "apply_rotary_emb")
+    precompute_freqs_cis = _load_fn("phase1_fundamentals/26_rotary_embedding", "precompute_freqs_cis")
+    embedding = _load_fn("phase1_fundamentals/27_embedding", "embedding")
+    adamw_step = _load_fn("phase1_fundamentals/28_adamw", "adamw_step")
+    adamw_pytorch_step = _load_fn("phase1_fundamentals/28_adamw", "adamw_pytorch_step")
 
     # Load liger kernels
     liger_softmax = get_liger_softmax()
@@ -145,7 +150,41 @@ def build_phase1_cases() -> list[dict]:
     })
 
     # ================================================================
-    # Case 2: Fused Softmax (Triton vs Liger vs PyTorch)
+    # Case 2-6: Reduction Primitives (12-16)
+    # ================================================================
+    def gen_1d(size):
+        return (torch.randn(size, device="cuda", dtype=torch.float32),), {}
+
+    cases.append({"name": "Vector Sum Reduction", "category": "reduction", "gen": gen_1d,
+        "make_impls": lambda x: {"Triton (ours)": lambda: vector_sum(x), "PyTorch (ref)": lambda: x.sum()},
+        "flops": lambda a: a[0].numel(), "bytes": lambda a: a[0].numel()*4, "dtype": "fp32",
+        "sizes": [65536, 1048576, 16777216], "labels": ["64K", "1M", "16M"]})
+
+    cases.append({"name": "Vector Max Reduction", "category": "reduction", "gen": gen_1d,
+        "make_impls": lambda x: {"Triton (ours)": lambda: vector_max(x), "PyTorch (ref)": lambda: x.max()},
+        "flops": lambda a: a[0].numel(), "bytes": lambda a: a[0].numel()*4, "dtype": "fp32",
+        "sizes": [65536, 1048576, 16777216], "labels": ["64K", "1M", "16M"]})
+
+    cases.append({"name": "L2 Vector Norm", "category": "reduction", "gen": gen_1d,
+        "make_impls": lambda x: {"Triton (ours)": lambda: vector_norm_l2(x), "PyTorch (ref)": lambda: x.norm(p=2)},
+        "flops": lambda a: a[0].numel()*3, "bytes": lambda a: a[0].numel()*4, "dtype": "fp32",
+        "sizes": [65536, 1048576, 16777216], "labels": ["64K", "1M", "16M"]})
+
+    cases.append({"name": "Welford Mean+Var (1-pass)", "category": "reduction", "gen": gen_1d,
+        "make_impls": lambda x: {"Triton (ours)": lambda: welford_mean_var(x), "PyTorch (ref)": lambda: (x.mean(), x.var(unbiased=False))},
+        "flops": lambda a: a[0].numel()*4, "bytes": lambda a: a[0].numel()*4, "dtype": "fp32",
+        "sizes": [65536, 1048576, 16777216], "labels": ["64K", "1M", "16M"]})
+
+    def gen_logsumexp(size):
+        n_rows, n_cols = 256, size
+        return (torch.randn(n_rows, n_cols, device="cuda", dtype=torch.float32),), {}
+    cases.append({"name": "Row-Wise LogSumExp", "category": "reduction", "gen": gen_logsumexp,
+        "make_impls": lambda x: {"Triton (ours)": lambda: logsumexp_row(x), "PyTorch (ref)": lambda: torch.logsumexp(x, dim=-1)},
+        "flops": lambda a: a[0].numel()*5, "bytes": lambda a: a[0].numel()*4, "dtype": "fp32",
+        "sizes": [512, 2048, 8192], "labels": ["256×512", "256×2K", "256×8K"]})
+
+    # ================================================================
+    # Case 7: Fused Softmax (Triton vs Liger vs PyTorch)
     # ================================================================
     def gen_softmax(size: int):
         n_rows, n_cols = 1024, size

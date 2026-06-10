@@ -1,5 +1,5 @@
 """
-15_gradient_clipping.py — Gradient Clipping (by global norm) kernel
+20_gradient_clipping.py — Gradient Clipping (by global norm) kernel
 
 学习目标：
   - 理解 gradient clipping 在训练稳定性中的作用
@@ -22,7 +22,7 @@ Triton 实现分两阶段:
   Stage 1: 每个 program 计算局部的 sum(g²), 用 atomic_add 累加到全局 total_norm²
   Stage 2: 如果超阈值, 每个元素乘以缩放因子
 
-运行: python phase1_fundamentals/15_gradient_clipping.py
+运行: python phase1_fundamentals/20_gradient_clipping.py
 """
 
 import sys
@@ -115,7 +115,7 @@ def clip_grad_norm(
 
 def main():
     print("=" * 60)
-    print("15_gradient_clipping — Gradient Clipping by Norm")
+    print("20_gradient_clipping — Gradient Clipping by Norm")
     print("=" * 60)
 
     if torch.cuda.is_available():

@@ -55,41 +55,53 @@ run-geglu:  ## Run 11 GeGLU kernel
 	python phase1_fundamentals/11_geglu.py
 
 # Phase 1 — Group 5: Reductions
-run-softmax:  ## Run 12 fused softmax kernel
-	python phase1_fundamentals/12_fused_softmax.py
-run-cross-entropy:  ## Run 13 cross entropy kernel
-	python phase1_fundamentals/13_cross_entropy.py
-run-cumsum:  ## Run 14 cumsum kernel
-	python phase1_fundamentals/14_cumsum.py
-run-grad-clip:  ## Run 15 gradient clipping kernel
-	python phase1_fundamentals/15_gradient_clipping.py
+run-vector-sum:  ## Run 12 vector sum kernel
+	python phase1_fundamentals/12_vector_sum.py
+run-vector-max:  ## Run 13 vector max kernel
+	python phase1_fundamentals/13_vector_max.py
+run-vector-norm:  ## Run 14 L2 norm kernel
+	python phase1_fundamentals/14_vector_norm_l2.py
+run-welford:  ## Run 15 Welford mean+var kernel
+	python phase1_fundamentals/15_welford_mean_var.py
+run-logsumexp:  ## Run 16 LogSumExp kernel
+	python phase1_fundamentals/16_logsumexp.py
+run-softmax:  ## Run 17 fused softmax kernel
+	python phase1_fundamentals/17_fused_softmax.py
+run-cross-entropy:  ## Run 18 cross entropy kernel
+	python phase1_fundamentals/18_cross_entropy.py
+run-cumsum:  ## Run 19 cumsum kernel
+	python phase1_fundamentals/19_cumsum.py
+run-grad-clip:  ## Run 20 gradient clipping kernel
+	python phase1_fundamentals/20_gradient_clipping.py
 
 # Phase 1 — Group 6: Normalizations
-run-layernorm:  ## Run 16 layer norm kernel
-	python phase1_fundamentals/16_layer_norm.py
-run-rms-norm:  ## Run 17 RMS norm kernel
-	python phase1_fundamentals/17_rms_norm.py
-run-group-norm:  ## Run 18 group norm kernel
-	python phase1_fundamentals/18_group_norm.py
-run-batch-norm:  ## Run 19 batch norm kernel
-	python phase1_fundamentals/19_batch_norm.py
-run-residual-norm:  ## Run 20 residual+norm kernel
-	python phase1_fundamentals/20_residual_add_norm.py
+run-layernorm:  ## Run 21 layer norm kernel
+	python phase1_fundamentals/21_layer_norm.py
+run-rms-norm:  ## Run 22 RMS norm kernel
+	python phase1_fundamentals/22_rms_norm.py
+run-group-norm:  ## Run 23 group norm kernel
+	python phase1_fundamentals/23_group_norm.py
+run-batch-norm:  ## Run 24 batch norm kernel
+	python phase1_fundamentals/24_batch_norm.py
+run-residual-norm:  ## Run 25 residual+norm kernel
+	python phase1_fundamentals/25_residual_add_norm.py
 
 # Phase 1 — Group 7: Position / Embedding / Optimizer
-run-rope:  ## Run 21 rotary embedding kernel
-	python phase1_fundamentals/21_rotary_embedding.py
-run-embedding:  ## Run 22 embedding kernel
-	python phase1_fundamentals/22_embedding.py
-run-adamw:  ## Run 23 AdamW kernel
-	python phase1_fundamentals/23_adamw.py
+run-rope:  ## Run 26 rotary embedding kernel
+	python phase1_fundamentals/26_rotary_embedding.py
+run-embedding:  ## Run 27 embedding kernel
+	python phase1_fundamentals/27_embedding.py
+run-adamw:  ## Run 28 AdamW kernel
+	python phase1_fundamentals/28_adamw.py
 
 # All Phase 1
 run-phase1: run-vector-add run-sigmoid run-tanh run-leaky-relu \
            run-relu-bias run-scale-bias-residual run-silu run-gelu run-dropout \
-           run-swiglu run-geglu run-softmax run-cross-entropy run-cumsum run-grad-clip \
+           run-swiglu run-geglu \
+           run-vector-sum run-vector-max run-vector-norm run-welford run-logsumexp \
+           run-softmax run-cross-entropy run-cumsum run-grad-clip \
            run-layernorm run-rms-norm run-group-norm run-batch-norm run-residual-norm \
-           run-rope run-embedding run-adamw  ## Run all 23 Phase 1 kernels
+           run-rope run-embedding run-adamw  ## Run all 28 Phase 1 kernels
 
 # ============================================================
 # Phase 2 — Compute

@@ -10,7 +10,7 @@
   softmax(x_i) = exp(x_i - max(x)) / sum(exp(x_i - max(x)))
   减去 max 是为了数值稳定性，避免 exp 溢出
 
-运行: python phase1_fundamentals/12_fused_softmax.py
+运行: python phase1_fundamentals/17_fused_softmax.py
 """
 
 import sys

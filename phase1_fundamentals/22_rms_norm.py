@@ -16,7 +16,7 @@
   - RMSNorm 没有 bias 参数（只有 scale γ）
   - 经验上 RMSNorm 和 LayerNorm 效果相当，但快 ~10-15%
 
-运行: python phase1_fundamentals/17_rms_norm.py
+运行: python phase1_fundamentals/22_rms_norm.py
 """
 
 import sys

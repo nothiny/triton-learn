@@ -1,5 +1,5 @@
 """
-19_batch_norm.py — Batch Normalization 1D kernel
+24_batch_norm.py — Batch Normalization 1D kernel
 
 学习目标：
   - 理解 BatchNorm vs LayerNorm 的根本差异 (跨样本 vs 样本内)
@@ -20,7 +20,7 @@
   - 非 coalesced 访存 → 带宽利用率大幅下降
   - 这也是为什么 Transformer 不用 BatchNorm 的原因之一
 
-运行: python phase1_fundamentals/19_batch_norm.py
+运行: python phase1_fundamentals/24_batch_norm.py
 """
 
 import sys
@@ -119,7 +119,7 @@ def batchnorm1d(
 
 def main():
     print("=" * 60)
-    print("19_batch_norm — Batch Normalization 1D")
+    print("24_batch_norm — Batch Normalization 1D")
     print("=" * 60)
 
     if torch.cuda.is_available():

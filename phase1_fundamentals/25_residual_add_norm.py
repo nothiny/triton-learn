@@ -27,7 +27,7 @@ Fusion 收益分析:
     Fusion:     (read 3N) + (write N)                               = 4N × 4B
     减少约 25-40% 的 HBM 流量
 
-运行: python phase1_fundamentals/20_residual_add_norm.py
+运行: python phase1_fundamentals/25_residual_add_norm.py
 """
 
 import sys
@@ -52,7 +52,7 @@ def _load_fn(path, name):
     spec.loader.exec_module(mod)
     return getattr(mod, name)
 
-layer_norm_fn = _load_fn("phase1_fundamentals/16_layer_norm", "layer_norm")
+layer_norm_fn = _load_fn("phase1_fundamentals/21_layer_norm", "layer_norm")
 
 
 @triton.jit

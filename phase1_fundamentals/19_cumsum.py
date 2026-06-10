@@ -1,5 +1,5 @@
 """
-14_cumsum.py — Parallel Prefix Sum (Cumulative Sum) kernel
+19_cumsum.py — Parallel Prefix Sum (Cumulative Sum) kernel
 
 学习目标：
   - 理解并行 scan 算法 (Blelloch scan / Hillis-Steele scan)
@@ -25,7 +25,7 @@
   - Flash Attention 中 online softmax 依赖 local cumsum 维护 running sum
   - Triton 有 tl.associative_scan 可以直接用, 但理解原理很重要
 
-运行: python phase1_fundamentals/14_cumsum.py
+运行: python phase1_fundamentals/19_cumsum.py
 """
 
 import sys
@@ -114,7 +114,7 @@ def cumsum_full(x: torch.Tensor, BLOCK_SIZE: int = 1024) -> torch.Tensor:
 
 def main():
     print("=" * 60)
-    print("14_cumsum — Parallel Prefix Sum (Cumsum)")
+    print("19_cumsum — Parallel Prefix Sum (Cumsum)")
     print("=" * 60)
 
     if torch.cuda.is_available():

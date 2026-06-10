@@ -1,5 +1,5 @@
 """
-23_adamw.py — AdamW Optimizer Step kernel
+28_adamw.py — AdamW Optimizer Step kernel
 
 学习目标：
   - 理解 AdamW 优化器的数学公式
@@ -24,7 +24,7 @@ Fusion 收益:
   Fusion:    1 个 CUDA kernel → 减少 5 次 HBM round-trip!
   实际加速: 2-3x vs PyTorch foreach (取决于参数规模)
 
-运行: python phase1_fundamentals/23_adamw.py
+运行: python phase1_fundamentals/28_adamw.py
 """
 
 import math
@@ -145,7 +145,7 @@ def adamw_pytorch_step(param, grad, exp_avg, exp_avg_sq, step,
 
 def main():
     print("=" * 60)
-    print("23_adamw — Fused AdamW Optimizer Step")
+    print("28_adamw — Fused AdamW Optimizer Step")
     print("=" * 60)
 
     if torch.cuda.is_available():

@@ -28,7 +28,7 @@ Max subtraction trick:
   - PyTorch: F.cross_entropy (cuDNN backend, 高度优化)
   - Liger Kernel: liger_cross_entropy (fused Triton 实现)
 
-运行: python phase1_fundamentals/13_cross_entropy.py
+运行: python phase1_fundamentals/18_cross_entropy.py
 """
 
 import sys

@@ -28,7 +28,7 @@ RoPE 的特性:
   - head_dim 通常在 64-128 之间, 即 32-64 个旋转对
   - 现代 LLM 使用更大的 base (如 500000) 来支持更长的上下文
 
-运行: python phase1_fundamentals/21_rotary_embedding.py
+运行: python phase1_fundamentals/26_rotary_embedding.py
 """
 
 import math

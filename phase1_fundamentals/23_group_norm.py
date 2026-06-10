@@ -26,7 +26,7 @@
   - 扩散模型: Stable Diffusion 使用 GroupNorm
   - G = C → InstanceNorm; G = 1 → LayerNorm (对 2D 输入)
 
-运行: python phase1_fundamentals/18_group_norm.py
+运行: python phase1_fundamentals/23_group_norm.py
 """
 
 import sys
