@@ -211,7 +211,7 @@ E5M2 (更大范围):
 | TMA | — | ✅ | ⚠️ 实验性 |
 | Thread Block Cluster | — | ✅ | ❌ 不支持 |
 | FP8 MMA | — | ✅ | ⚠️ 部分支持 |
-| Warp Specialization | — | ✅ | ❌ 不支持（需 CuTe） |
+| Warp Specialization | — | ✅ | ❌ 不支持（需 CUTILE） |
 
 结论: 在 A100 上，Triton GEMM 可以接近 cuBLAS 的 85-90%。
        在 H100 上，由于无法使用 wgmma/TMA/warp specialization，

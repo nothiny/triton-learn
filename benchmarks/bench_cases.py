@@ -109,7 +109,7 @@ def build_cases() -> list[BenchCase]:
 
     # -- Fused Softmax --
     try:
-        fused_softmax = _load_fn("phase1_fundamentals/02_fused_softmax", "fused_softmax")
+        fused_softmax = _load_fn("phase1_fundamentals/12_fused_softmax", "fused_softmax")
     except Exception:
         fused_softmax = None
 
@@ -141,7 +141,7 @@ def build_cases() -> list[BenchCase]:
 
     # -- Fused ReLU+Bias --
     try:
-        fused_relu_bias = _load_fn("phase1_fundamentals/03_fused_relu_bias", "fused_relu_bias")
+        fused_relu_bias = _load_fn("phase1_fundamentals/05_fused_relu_bias", "fused_relu_bias")
     except Exception:
         fused_relu_bias = None
 
@@ -172,7 +172,7 @@ def build_cases() -> list[BenchCase]:
 
     # -- Layer Norm --
     try:
-        layer_norm = _load_fn("phase1_fundamentals/04_layer_norm", "layer_norm")
+        layer_norm = _load_fn("phase1_fundamentals/16_layer_norm", "layer_norm")
     except Exception:
         layer_norm = None
 
@@ -204,6 +204,284 @@ def build_cases() -> list[BenchCase]:
         sizes=[256, 1024, 4096, 16384],
         size_labels=["256×1K", "1K×1K", "4K×1K", "16K×1K"],
         rtol=1e-2, atol=1e-2,  # relaxed: simplified 3-pass impl
+    ))
+
+    # ================================================================
+    # Phase 1 new: RMSNorm, Activations, Dropout, Residual+Norm
+    # ================================================================
+
+    # -- RMS Norm --
+    try:
+        rms_norm = _load_fn("phase1_fundamentals/17_rms_norm", "rms_norm")
+    except Exception:
+        rms_norm = None
+
+    def gen_rms(size: int):
+        n_rows, n_cols = size, 4096
+        x = torch.randn(n_rows, n_cols, device="cuda", dtype=torch.float32)
+        w = torch.randn(n_cols, device="cuda", dtype=torch.float32)
+        return (x, w), {"eps": 1e-5}
+
+    def ref_rms_pytorch(x, w, eps=1e-5):
+        rms = torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + eps)
+        return x * rms * w
+
+    def flops_rms(inputs) -> int:
+        return inputs[0].numel() * 5  # sq + mean + rsqrt + mul
+
+    def bytes_rms(inputs) -> int:
+        x = inputs[0]
+        return x.numel() * 2 * 4 + x.shape[-1] * 4  # x + w read, out write
+
+    cases.append(BenchCase(
+        name="RMS Norm (N×4096)",
+        category="normalization",
+        triton_fn=rms_norm,
+        ref_fn=ref_rms_pytorch,
+        input_gen=gen_rms,
+        flops_calc=flops_rms,
+        bytes_calc=bytes_rms,
+        sizes=[256, 1024, 4096, 16384],
+        size_labels=["256×4K", "1K×4K", "4K×4K", "16K×4K"],
+        rtol=1e-3, atol=1e-3,
+    ))
+
+    # -- SiLU Activation --
+    try:
+        silu = _load_fn("phase1_fundamentals/07_silu", "silu")
+    except Exception:
+        silu = None
+
+    def gen_elem(size: int):
+        x = torch.randn(size, device="cuda", dtype=torch.float32)
+        return (x,), {}
+
+    def flops_silu(inputs) -> int:
+        return inputs[0].numel() * 5  # sigmoid(~4) + mul
+
+    def bytes_activation(inputs) -> int:
+        return inputs[0].numel() * 2 * 4  # read + write
+
+    cases.append(BenchCase(
+        name="SiLU Activation",
+        category="elementwise",
+        triton_fn=silu,
+        ref_fn=lambda x: torch.nn.functional.silu(x),
+        input_gen=gen_elem,
+        flops_calc=flops_silu,
+        bytes_calc=bytes_activation,
+        sizes=[65536, 1048576, 16777216, 67108864],
+        size_labels=["64K", "1M", "16M", "64M"],
+        rtol=1e-4, atol=1e-4,
+    ))
+
+    # -- GELU Activation --
+    try:
+        gelu = _load_fn("phase1_fundamentals/08_gelu", "gelu")
+    except Exception:
+        gelu = None
+
+    def flops_gelu(inputs) -> int:
+        return inputs[0].numel() * 9  # x³ + mul + add + sigmoid + mul
+
+    cases.append(BenchCase(
+        name="GELU Activation",
+        category="elementwise",
+        triton_fn=gelu,
+        ref_fn=lambda x: torch.nn.functional.gelu(x, approximate="tanh"),
+        input_gen=gen_elem,
+        flops_calc=flops_gelu,
+        bytes_calc=bytes_activation,
+        sizes=[65536, 1048576, 16777216, 67108864],
+        size_labels=["64K", "1M", "16M", "64M"],
+        rtol=1e-3, atol=1e-3,  # tanh approx has ~1e-3 diff
+    ))
+
+    # -- Dropout --
+    try:
+        dropout_fn = _load_fn("phase1_fundamentals/09_dropout", "dropout")
+    except Exception:
+        dropout_fn = None
+
+    def gen_dropout(size: int):
+        x = torch.randn(size, device="cuda", dtype=torch.float32)
+        return (x,), {"p": 0.5}
+
+    def ref_dropout(x, p=0.5):
+        import random
+        return torch.nn.functional.dropout(x, p=p, training=True)
+
+    def triton_dropout_wrapper(x, p=0.5):
+        import random
+        seed = random.randint(0, 2**31 - 1)
+        return dropout_fn(x, p=p, seed=seed)[0]
+
+    def flops_dropout(inputs) -> int:
+        return inputs[0].numel() * 4  # rand + compare + mul
+
+    def bytes_dropout(inputs) -> int:
+        return inputs[0].numel() * 3 * 4  # x + out + mask
+
+    cases.append(BenchCase(
+        name="Dropout (p=0.5)",
+        category="elementwise",
+        triton_fn=triton_dropout_wrapper if dropout_fn else None,
+        ref_fn=ref_dropout,
+        input_gen=gen_dropout,
+        flops_calc=flops_dropout,
+        bytes_calc=bytes_dropout,
+        sizes=[65536, 1048576, 16777216, 67108864],
+        size_labels=["64K", "1M", "16M", "64M"],
+        rtol=0.2, atol=0.2,  # statistical: mask patterns differ
+    ))
+
+    # -- Fused Residual Add + LayerNorm --
+    try:
+        residual_add_norm = _load_fn("phase1_fundamentals/20_residual_add_norm", "residual_add_norm")
+    except Exception:
+        residual_add_norm = None
+
+    def gen_residual(size: int):
+        n_rows, n_cols = size, 1024
+        x = torch.randn(n_rows, n_cols, device="cuda", dtype=torch.float32)
+        residual = torch.randn(n_rows, n_cols, device="cuda", dtype=torch.float32)
+        w = torch.randn(n_cols, device="cuda", dtype=torch.float32)
+        b = torch.randn(n_cols, device="cuda", dtype=torch.float32)
+        return (x, residual, w, b), {"eps": 1e-5}
+
+    def ref_residual(x, residual, w, b, eps=1e-5):
+        return torch.nn.functional.layer_norm(
+            x + residual, [x.shape[-1]], w, b, eps=eps
+        )
+
+    def flops_residual(inputs) -> int:
+        return inputs[0].numel() * 9  # add + mean + var + norm + affine
+
+    def bytes_residual(inputs) -> int:
+        return inputs[0].numel() * 5 * 4  # x + r + w + b + out
+
+    cases.append(BenchCase(
+        name="Residual+LayerNorm (N×1024)",
+        category="normalization",
+        triton_fn=residual_add_norm,
+        ref_fn=ref_residual,
+        input_gen=gen_residual,
+        flops_calc=flops_residual,
+        bytes_calc=bytes_residual,
+        sizes=[256, 1024, 4096, 16384],
+        size_labels=["256×1K", "1K×1K", "4K×1K", "16K×1K"],
+        rtol=1e-2, atol=1e-2,
+    ))
+
+    # -- SwiGLU --
+    try:
+        swiglu = _load_fn("phase1_fundamentals/10_swiglu", "swiglu")
+    except Exception:
+        swiglu = None
+
+    def gen_swiglu(size: int):
+        gate = torch.randn(size, 4096, device="cuda", dtype=torch.float32)
+        up = torch.randn(size, 4096, device="cuda", dtype=torch.float32)
+        return (gate, up), {}
+
+    cases.append(BenchCase(
+        name="SwiGLU (N×4096)",
+        category="elementwise",
+        triton_fn=swiglu,
+        ref_fn=lambda gate, up: gate * torch.nn.functional.silu(up),
+        input_gen=gen_swiglu,
+        flops_calc=lambda inputs: inputs[0].numel() * 6,
+        bytes_calc=lambda inputs: inputs[0].numel() * 3 * 4,
+        sizes=[1024, 2048, 4096],
+        size_labels=["1K×4K", "2K×4K", "4K×4K"],
+        rtol=1e-4, atol=1e-4,
+    ))
+
+    # -- Cross Entropy Loss --
+    try:
+        cross_entropy_loss = _load_fn("phase1_fundamentals/13_cross_entropy", "cross_entropy_loss")
+    except Exception:
+        cross_entropy_loss = None
+
+    def gen_ce(size: int):
+        logits = torch.randn(1024, size, device="cuda", dtype=torch.float32)
+        labels = torch.randint(0, size, (1024,), device="cuda")
+        return (logits, labels), {}
+
+    cases.append(BenchCase(
+        name="Cross Entropy (1024×C)",
+        category="reduction",
+        triton_fn=cross_entropy_loss,
+        ref_fn=lambda logits, labels: torch.nn.functional.cross_entropy(logits, labels),
+        input_gen=gen_ce,
+        flops_calc=lambda inputs: inputs[0].numel() * 13,
+        bytes_calc=lambda inputs: inputs[0].numel() * 4 + inputs[1].numel() * 8,
+        sizes=[1024, 8192, 32000],
+        size_labels=["1024×1K", "1024×8K", "1024×32K"],
+        rtol=1e-3, atol=1e-3,
+    ))
+
+    # -- Rotary Position Embedding --
+    try:
+        apply_rotary_emb = _load_fn("phase1_fundamentals/21_rotary_embedding", "apply_rotary_emb")
+        precompute_freqs_cis = _load_fn("phase1_fundamentals/21_rotary_embedding", "precompute_freqs_cis")
+    except Exception:
+        apply_rotary_emb = None
+        precompute_freqs_cis = None
+
+    def gen_rope(size: int):
+        head_dim = 128
+        x = torch.randn(4, 32, size, head_dim, device="cuda", dtype=torch.float32)
+        cos, sin = precompute_freqs_cis(head_dim, size, device="cuda")
+        return (x, cos, sin), {}
+
+    def ref_rope(x, cos, sin):
+        x_rotated = torch.stack([-x[..., 1::2], x[..., ::2]], dim=-1).flatten(-2)
+        return x * cos + x_rotated * sin
+
+    def triton_rope_wrapper(x, cos, sin):
+        return apply_rotary_emb(x, cos, sin)
+
+    cases.append(BenchCase(
+        name="Rotary Embedding (RoPE)",
+        category="elementwise",
+        triton_fn=triton_rope_wrapper if apply_rotary_emb else None,
+        ref_fn=ref_rope,
+        input_gen=gen_rope,
+        flops_calc=lambda inputs: inputs[0].numel() * 3,
+        bytes_calc=lambda inputs: inputs[0].numel() * 4 * 4,
+        sizes=[512, 1024, 2048],
+        size_labels=["N=512", "N=1K", "N=2K"],
+        rtol=1e-4, atol=1e-4,
+    ))
+
+    # -- Group Norm --
+    try:
+        group_norm = _load_fn("phase1_fundamentals/18_group_norm", "group_norm")
+    except Exception:
+        group_norm = None
+
+    def gen_gn(size: int):
+        C = 256
+        x = torch.randn(size, C, device="cuda", dtype=torch.float32)
+        w = torch.randn(C, device="cuda")
+        b = torch.randn(C, device="cuda")
+        return (x, 8, w, b), {}
+
+    def ref_gn(x, num_groups, w, b):
+        return torch.nn.functional.group_norm(x, num_groups, w, b, eps=1e-5)
+
+    cases.append(BenchCase(
+        name="Group Norm (N×256, G=8)",
+        category="normalization",
+        triton_fn=group_norm,
+        ref_fn=ref_gn,
+        input_gen=gen_gn,
+        flops_calc=lambda inputs: inputs[0].numel() * 8,
+        bytes_calc=lambda inputs: inputs[0].numel() * 4 * 4,
+        sizes=[256, 1024, 4096],
+        size_labels=["256×256", "1K×256", "4K×256"],
+        rtol=1e-2, atol=1e-2,
     ))
 
     # ================================================================

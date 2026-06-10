@@ -1,50 +1,102 @@
-# Phase 1 — Triton 基础
+# Phase 1 — Triton 基础 (23 kernels)
 
-## 学习目标
+## 学习路线
 
-掌握 Triton 的核心编程抽象，写出正确的 elementwise + reduction kernel。
+按 7 个 group 组织，由浅入深、同类相聚：
 
-## 文件列表
-
+### Group 1: Hello World + 基础激活 (01-03)
 | # | 文件 | Kernel | 关键概念 | 难度 |
 |---|------|--------|----------|------|
 | 1 | `01_vector_add.py` | Vector Add | `@triton.jit`, `tl.program_id`, `tl.load/store`, autotune | ⭐ |
-| 2 | `02_fused_softmax.py` | Fused Softmax | Reduction (`tl.max`, `tl.sum`), masking, fusion | ⭐⭐ |
-| 3 | `03_fused_relu_bias.py` | Fused ReLU+Bias | Operator fusion, bandwidth analysis | ⭐ |
-| 4 | `04_layer_norm.py` | Layer Norm | Welford 算法, shared memory reduction | ⭐⭐⭐ |
+| 2 | `02_sigmoid.py` | Sigmoid | `tl.sigmoid`, MUFU 硬件加速 | ⭐ |
+| 3 | `03_tanh.py` | Tanh | 手写数学函数, sigmoid→tanh 等价变换 | ⭐ |
+
+### Group 2: Elementwise Fusion (04-06)
+| # | 文件 | Kernel | 关键概念 | 难度 |
+|---|------|--------|----------|------|
+| 4 | `04_leaky_relu.py` | LeakyReLU / PReLU | `tl.where` 分支消除, 参数化激活 | ⭐ |
+| 5 | `05_fused_relu_bias.py` | Fused ReLU+Bias | 2-op fusion, bandwidth analysis | ⭐ |
+| 6 | `06_fused_scale_bias_residual.py` | Scale+Bias+Residual | 3-input fusion, ResNet pattern | ⭐⭐ |
+
+### Group 3: 高级激活 + Dropout (07-09)
+| # | 文件 | Kernel | 关键概念 | 难度 |
+|---|------|--------|----------|------|
+| 7 | `07_silu.py` | SiLU / Swish | `x*sigmoid(x)`, Llama 激活 | ⭐ |
+| 8 | `08_gelu.py` | GELU | tanh 近似, BERT/GPT 激活 | ⭐⭐ |
+| 9 | `09_dropout.py` | Dropout | Philox RNG (`tl.rand`), inverted dropout | ⭐⭐ |
+
+### Group 4: Gated Activations (10-11)
+| # | 文件 | Kernel | 关键概念 | 难度 |
+|---|------|--------|----------|------|
+| 10 | `10_swiglu.py` | SwiGLU | Fused `gate*SiLU(up)`, Llama FFN | ⭐⭐ |
+| 11 | `11_geglu.py` | GeGLU | Fused `gate*GELU(up)`, 对比 SwiGLU | ⭐⭐ |
+
+### Group 5: Reductions (12-15)
+| # | 文件 | Kernel | 关键概念 | 难度 |
+|---|------|--------|----------|------|
+| 12 | `12_fused_softmax.py` | Fused Softmax | max+sum reduction, online softmax | ⭐⭐ |
+| 13 | `13_cross_entropy.py` | Cross Entropy Loss | log_softmax, max-subtraction trick | ⭐⭐⭐ |
+| 14 | `14_cumsum.py` | Cumsum / Prefix Scan | `tl.associative_scan`, Blelloch scan | ⭐⭐⭐ |
+| 15 | `15_gradient_clipping.py` | Gradient Clipping | `tl.atomic_add`, 全局 reduction | ⭐⭐ |
+
+### Group 6: Normalizations (16-20)
+| # | 文件 | Kernel | 关键概念 | 难度 |
+|---|------|--------|----------|------|
+| 16 | `16_layer_norm.py` | Layer Norm | 3-pass reduction, mean+var, affine | ⭐⭐⭐ |
+| 17 | `17_rms_norm.py` | RMS Norm | 2-pass reduction, `tl.math.rsqrt` | ⭐⭐ |
+| 18 | `18_group_norm.py` | Group Norm | 分组 reduction, spatial dims | ⭐⭐⭐ |
+| 19 | `19_batch_norm.py` | BatchNorm1D | 跨 sample strided reduction | ⭐⭐⭐ |
+| 20 | `20_residual_add_norm.py` | Residual+LayerNorm | Multi-input fusion, skip connection | ⭐⭐⭐ |
+
+### Group 7: Position / Embedding / Optimizer (21-23)
+| # | 文件 | Kernel | 关键概念 | 难度 |
+|---|------|--------|----------|------|
+| 21 | `21_rotary_embedding.py` | Rotary Embedding | Pairwise 2D rotation, RoPE | ⭐⭐ |
+| 22 | `22_embedding.py` | Embedding Lookup | Gather/scatter, 随机访存 | ⭐⭐ |
+| 23 | `23_adamw.py` | AdamW Optimizer | 多 buffer fusion, 6-in-1 kernel | ⭐⭐⭐ |
 
 ## 运行方式
 
 ```bash
 # 单个文件
 python phase1_fundamentals/01_vector_add.py
-python phase1_fundamentals/02_fused_softmax.py
-python phase1_fundamentals/03_fused_relu_bias.py
-python phase1_fundamentals/04_layer_norm.py
+# ... (23 kernels total)
 
 # 使用 Makefile
-make run-vector-add
-make run-softmax
-make run-relu-bias
-make run-layernorm
+make run-vector-add   make run-sigmoid       make run-tanh
+make run-leaky-relu   make run-relu-bias     make run-scale-bias-residual
+make run-silu         make run-gelu          make run-dropout
+make run-swiglu       make run-geglu
+make run-softmax      make run-cross-entropy make run-cumsum      make run-grad-clip
+make run-layernorm    make run-rms-norm      make run-group-norm  make run-batch-norm
+make run-residual-norm
+make run-rope         make run-embedding     make run-adamw
 
 # 全部运行
 make run-phase1
 ```
 
-每个文件可以直接 `python <file>` 运行，自带 `__main__` 测试代码，会输出：
-- ✅/❌ 正确性验证（vs PyTorch reference）
-- 性能对比（Triton vs PyTorch 时间/带宽）
-
-## 测试
+## 性能对比
 
 ```bash
-pytest tests/test_phase1.py -v
+# 完整 3-way 对比 (Triton vs PyTorch vs Liger)
+make bench-phase1
+
+# 按 group 筛选
+python benchmarks/bench_phase1.py --category elementwise    # Group 1-4, 7
+python benchmarks/bench_phase1.py --category reduction      # Group 5
+python benchmarks/bench_phase1.py --category normalization  # Group 6
+
+# 快速模式
+python benchmarks/bench_phase1.py --quick
 ```
 
 ## 学习建议
 
-1. 先跑 `01_vector_add.py`，对着代码理解每一行的 GPU 语义
-2. 然后看 `notes/00_gpu_execution_model.md` 和 `notes/01_triton_programming_model.md`
-3. 再跑 `02_fused_softmax.py`，理解 reduction
-4. `04_layer_norm.py` 当前是简化版（3-pass），后续可优化为 Welford 1-pass
+1. **Group 1** (01-03): 动手写第一个 kernel, 理解 GPU 执行模型
+2. **Group 2** (04-06): 理解 operator fusion 为什么重要
+3. **Group 3** (07-09): 学习复杂数学函数和随机数的 GPU 实现
+4. **Group 4** (10-11): 掌握 gated activation 模式 (Llama FFN 的核心)
+5. **Group 5** (12-15): 深入 reduction — 从 softmax 到 parallel scan
+6. **Group 6** (16-20): 归一化全家桶 — 理解 LN/BN/GN/RMS 的差异
+7. **Group 7** (21-23): 实战 — RoPE, Embedding, AdamW (LLM 训练全流程)

@@ -226,7 +226,7 @@ class KernelProfiler:
             ridge_point = info.peak_fp16_tflops / (info.hbm_bandwidth_gb_s / 1000)
             # ^ multiply by 1000 because bandwidth is in GB/s but TFLOPS is T = 1000G
 
-            if ai < ridge_point / 1000:
+            if ai < ridge_point:
                 result.bottleneck = "memory-bound"
             else:
                 result.bottleneck = "compute-bound"
@@ -426,7 +426,7 @@ def bench_compare(
     peak_tflops = info.peak_fp16_tflops if dtype in ("fp16", "bf16") else info.peak_fp32_tflops
     ridge = peak_tflops / (info.hbm_bandwidth_gb_s / 1000) if info.hbm_bandwidth_gb_s > 0 else 0.0
     ai = flops / bytes_accessed if bytes_accessed > 0 else float("inf")
-    bottleneck = "compute_bound" if ai >= ridge / 1000 else "memory_bound"
+    bottleneck = "compute_bound" if ai >= ridge else "memory_bound"
 
     return CompareResult(
         results=results,

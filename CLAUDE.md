@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project overview
 
-A systematic GPU kernel learning project using **Triton** as the main programming model, with side exploration of Triton's compiler internals and CuTe/CUTLASS. Target audience: developers with compiler backend experience (LLVM, register allocation, SSA IR) learning GPU programming.
+A systematic GPU kernel learning project using **Triton** as the main programming model, with side exploration of Triton's compiler internals and CUTILE/CUTLASS. Target audience: developers with compiler backend experience (LLVM, register allocation, SSA IR) learning GPU programming.
 
 The project is structured in 4 sequential phases, each with kernel files in `phase{N}_*/` and companion notes in `notes/`. The kernel at `phase2_compute/02_matmul_tiled.py` and the note `notes/03_triton_compiler_pipeline.md` are the most important files.
 

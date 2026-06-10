@@ -10,12 +10,19 @@
   softmax(x_i) = exp(x_i - max(x)) / sum(exp(x_i - max(x)))
   减去 max 是为了数值稳定性，避免 exp 溢出
 
-运行: python phase1_fundamentals/02_fused_softmax.py
+运行: python phase1_fundamentals/12_fused_softmax.py
 """
+
+import sys
+from pathlib import Path
 
 import torch
 import triton
 import triton.language as tl
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from utils.profiler import bench_compare, print_compare_report
+from benchmarks.references.liger_ref import get_liger_softmax
 
 
 @triton.jit
@@ -97,34 +104,30 @@ def main():
     print(f"  Max diff: {max_diff:.6e}")
     print(f"  Status: {'✅ PASS' if max_diff < 1e-3 else '❌ FAIL'}")
 
-    # 性能对比
+    # 性能对比: Triton vs PyTorch vs Liger
     print("\n--- Performance ---")
-    n_iter = 100
 
-    # Warmup
-    for _ in range(10):
-        _ = fused_softmax(x)
-    torch.cuda.synchronize()
+    implementations = {
+        "Triton (ours)": lambda: fused_softmax(x),
+        "PyTorch (ref)": lambda: torch.softmax(x, dim=-1),
+    }
 
-    start = torch.cuda.Event(enable_timing=True)
-    end = torch.cuda.Event(enable_timing=True)
+    # Add liger if available
+    liger_softmax = get_liger_softmax()
+    if liger_softmax:
+        implementations["Liger (SotA)"] = lambda: liger_softmax(x)
 
-    start.record()
-    for _ in range(n_iter):
-        _ = fused_softmax(x)
-    end.record()
-    torch.cuda.synchronize()
-    triton_ms = start.elapsed_time(end) / n_iter
+    n_elements = x.numel()
+    flops_total = n_elements * 5  # exp + sub + div ≈ 5 FLOPs per element
+    bytes_total = n_elements * 2 * 4  # read fp32 + write fp32
 
-    start.record()
-    for _ in range(n_iter):
-        _ = torch.softmax(x, dim=-1)
-    end.record()
-    torch.cuda.synchronize()
-    torch_ms = start.elapsed_time(end) / n_iter
-
-    print(f"  Triton fused softmax: {triton_ms:.4f} ms")
-    print(f"  PyTorch softmax:      {torch_ms:.4f} ms")
+    result = bench_compare(
+        implementations,
+        flops=flops_total,
+        bytes_accessed=bytes_total,
+        dtype="fp32",
+    )
+    print_compare_report(result)
 
 
 # PERFORMANCE NOTES

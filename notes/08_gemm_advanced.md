@@ -29,7 +29,7 @@ GROUP_M Swizzling:                改进 L2 cache 局部性
 Register Banking + Prefetch:      寄存器级别的优化
     │                              性能: ~60-80% peak
     ▼
-cuBLAS-level:                     手写 SASS、warp specialization (CuTe)
+cuBLAS-level:                     手写 SASS、warp specialization（cuTile/CUTLASS）
                                   性能: ~80-85% peak
 ```
 

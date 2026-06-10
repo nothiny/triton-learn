@@ -10,9 +10,15 @@
 运行: python phase1_fundamentals/01_vector_add.py
 """
 
+import sys
+from pathlib import Path
+
 import torch
 import triton
 import triton.language as tl
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from utils.profiler import bench_compare, print_compare_report
 
 # ---------------------------------------------------------------------------
 # Kernel 定义
@@ -117,45 +123,25 @@ def main():
         status = "✅" if max_diff < 1e-5 else "❌"
         print(f"  size={size:>10,}  max_diff={max_diff:.2e}  {status}")
 
-    # 性能对比
+    # 性能对比: Triton vs PyTorch
     print("\n--- Performance (16M elements) ---")
     size = 16777216
     x = torch.rand(size, device="cuda", dtype=torch.float32)
     y = torch.rand(size, device="cuda", dtype=torch.float32)
 
-    # Warmup
-    for _ in range(10):
-        _ = vector_add(x, y)
-    torch.cuda.synchronize()
-
-    # Benchmark Triton
-    import time
-
-    n_iter = 100
-    start = torch.cuda.Event(enable_timing=True)
-    end = torch.cuda.Event(enable_timing=True)
-    start.record()
-    for _ in range(n_iter):
-        _ = vector_add(x, y)
-    end.record()
-    torch.cuda.synchronize()
-    triton_ms = start.elapsed_time(end) / n_iter
-
-    # Benchmark PyTorch
-    start.record()
-    for _ in range(n_iter):
-        _ = x + y
-    end.record()
-    torch.cuda.synchronize()
-    torch_ms = start.elapsed_time(end) / n_iter
-
-    # 带宽计算: read 2×4bytes + write 1×4bytes = 12 bytes/element
     bytes_total = size * 3 * 4  # x(4B) + y(4B) + out(4B)
-    bw_triton = bytes_total / (triton_ms * 1e-3) / 1e9  # GB/s
-    bw_torch = bytes_total / (torch_ms * 1e-3) / 1e9
+    flops_total = size  # 1 FLOP per element
 
-    print(f"  Triton:  {triton_ms:.4f} ms  ({bw_triton:.1f} GB/s)")
-    print(f"  PyTorch: {torch_ms:.4f} ms  ({bw_torch:.1f} GB/s)")
+    result = bench_compare(
+        {
+            "Triton (ours)": lambda: vector_add(x, y),
+            "PyTorch (ref)": lambda: x + y,
+        },
+        flops=flops_total,
+        bytes_accessed=bytes_total,
+        dtype="fp32",
+    )
+    print_compare_report(result)
 
 
 # PERFORMANCE NOTES

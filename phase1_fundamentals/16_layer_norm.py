@@ -16,12 +16,19 @@ Welford 算法 (在线计算方差，无需两次遍历):
   S_k = S_{k-1} + (x_k - M_{k-1}) * (x_k - M_k)
   → μ = M_n, σ² = S_n / n
 
-运行: python phase1_fundamentals/04_layer_norm.py
+运行: python phase1_fundamentals/16_layer_norm.py
 """
+
+import sys
+from pathlib import Path
 
 import torch
 import triton
 import triton.language as tl
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from utils.profiler import bench_compare, print_compare_report
+from benchmarks.references.liger_ref import get_liger_ln
 
 
 @triton.jit
@@ -106,6 +113,33 @@ def main():
     print(f"  Shape: ({N_ROWS}, {N_COLS})")
     print(f"  Max diff: {max_diff:.6e}")
     print(f"  Status: {'✅ PASS' if max_diff < 1e-3 else '❌ FAIL'}")
+
+    # 性能对比: Triton vs PyTorch vs Liger
+    print("\n--- Performance ---")
+
+    implementations = {
+        "Triton (ours)": lambda: layer_norm(x, weight, bias, eps),
+        "PyTorch (ref)": lambda: torch.nn.functional.layer_norm(
+            x, [N_COLS], weight, bias, eps=eps
+        ),
+    }
+
+    # Add liger if available
+    liger_ln = get_liger_ln()
+    if liger_ln:
+        implementations["Liger (SotA)"] = lambda: liger_ln(x, weight, bias, eps)
+
+    n_elements = x.numel()
+    flops_total = n_elements * 8  # mean + var + norm + affine ≈ 8 FLOPs per element
+    bytes_total = n_elements * 3 * 4 + N_COLS * 2 * 4  # x + w + b read, out write
+
+    result = bench_compare(
+        implementations,
+        flops=flops_total,
+        bytes_accessed=bytes_total,
+        dtype="fp32",
+    )
+    print_compare_report(result)
 
 
 # PERFORMANCE NOTES

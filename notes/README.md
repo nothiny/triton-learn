@@ -47,7 +47,7 @@
 | # | 文件 | 内容 | 预计时间 | 前置知识 |
 |---|------|------|----------|----------|
 | 16 | `13_triton_internals.md` | Triton 内部：JIT/Cache/driver API | 20 min | 03 |
-| 17 | `04_cute_preview.md` | CuTe 预览：Layout 代数、MMA Atom | 20 min | 学完 Phase 1-2 后 |
+| 17 | `04_cutile_preview.md` | CUTILE 预览：Layout 代数、MMA Atom | 20 min | 学完 Phase 1-2 后 |
 | 18 | `05_benchmarking_methodology.md` | Benchmark 方法论：正确测量 GPU 性能 | 30 min | 01 |
 | 19 | `15_multi_gpu.md` | Multi-GPU：NVLink/all-reduce/tensor parallelism | 20 min | 01 |
 
@@ -90,7 +90,7 @@
 |---|------|---------|-----------|
 | 27 | **Triton vs TVM vs Halide vs MLIR** | 四个 DSL/编译器框架的对比：设计哲学、IR 设计、codegen 质量、适用场景 | 做编译器研究或选型时的参考 |
 | 28 | **Debug 进阶：PTX/SASS 级别调优** | 手写 PTX、SASS 指令级优化、寄存器分配干预、cuobjdump 分析 | 追求最后 5-10% 性能的终极手段 |
-| 29 | **CuTe 实战：第一个 CuTe GEMM** | 从零写一个 CUTLASS 3.x CuTe GEMM，对比 Triton 实现 | Phase 4 的核心内容 |
+| 29 | **cuTile Python 实战** | 用 NVIDIA cuTile Python 重写 GEMM，对比 Triton：性能、易用性、编译流程 | Phase 4 的核心内容 |
 | 30 | **Triton Kernel 安全性** | 越界访问检测、UB (undefined behavior) 分析、race condition 排查、fuzzing | 生产环境部署前的最后防线 |
 
 > 💡 **贡献方式**：挑一个主题，按现有笔记的格式（目标读者 + 新手友好 + 🔧 编译器视角 + 参考资料）写成 Markdown，放到 `notes/` 目录下。

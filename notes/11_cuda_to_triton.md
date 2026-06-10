@@ -248,7 +248,7 @@ Triton 不能直接使用:
 ## 7. 什么时候应该留在 CUDA？
 
 ```
-以下场景建议继续用 CUDA/CuTe 而不是迁移到 Triton:
+以下场景建议继续用 CUDA/CUTILE 而不是迁移到 Triton:
 
 1. 你的 kernel 需要 95%+ peak TFLOPS（H100 上）
    → Triton 没有 TMA/wgmma/warp specialization

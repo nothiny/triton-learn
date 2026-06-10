@@ -6,12 +6,18 @@
   - 学习 Triton 中 elementwise 操作的组合
   - 对比 fused vs sequential kernel 调用的性能差异
 
-运行: python phase1_fundamentals/03_fused_relu_bias.py
+运行: python phase1_fundamentals/05_fused_relu_bias.py
 """
+
+import sys
+from pathlib import Path
 
 import torch
 import triton
 import triton.language as tl
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from utils.profiler import bench_compare, print_compare_report
 
 
 @triton.jit
@@ -72,34 +78,27 @@ def main():
     max_diff = (out_triton - out_torch).abs().max().item()
     print(f"  Max diff: {max_diff:.6e}  {'✅' if max_diff < 1e-5 else '❌'}")
 
-    # 性能对比: fused vs sequential
+    # 性能对比: Fused Triton vs PyTorch fused
     n_iter = 100
 
-    # Fused kernel
+    # Warmup
     for _ in range(10):
         _ = fused_relu_bias(x, bias)
     torch.cuda.synchronize()
 
-    start = torch.cuda.Event(enable_timing=True)
-    end = torch.cuda.Event(enable_timing=True)
+    bytes_total = size * 3 * 4  # x + bias read, out write
+    flops_total = size * 2  # add + max
 
-    start.record()
-    for _ in range(n_iter):
-        _ = fused_relu_bias(x, bias)
-    end.record()
-    torch.cuda.synchronize()
-    fused_ms = start.elapsed_time(end) / n_iter
-
-    # Sequential: x + bias → write → read → ReLU
-    start.record()
-    for _ in range(n_iter):
-        _ = torch.relu(x + bias)
-    end.record()
-    torch.cuda.synchronize()
-    torch_ms = start.elapsed_time(end) / n_iter
-
-    print(f"\n  Fused Triton:   {fused_ms:.4f} ms")
-    print(f"  PyTorch fused:  {torch_ms:.4f} ms")
+    result = bench_compare(
+        {
+            "Triton (ours)": lambda: fused_relu_bias(x, bias),
+            "PyTorch (ref)": lambda: torch.relu(x + bias),
+        },
+        flops=flops_total,
+        bytes_accessed=bytes_total,
+        dtype="fp32",
+    )
+    print_compare_report(result)
 
 
 # PERFORMANCE NOTES
