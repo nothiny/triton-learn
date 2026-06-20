@@ -1,8 +1,8 @@
-# Phase 1 — Triton 基础 (28 kernels)
+# Phase 1 — Triton 基础 (50 kernels)
 
 ## 学习路线
 
-按 7 个 group 组织，由浅入深、同类相聚：
+按 10 个 group 组织，由浅入深、同类相聚：
 
 ### Group 1: Hello World + 基础激活 (01-03)
 | # | 文件 | Kernel | 关键概念 | 难度 |
@@ -31,7 +31,7 @@
 | 10 | `10_swiglu.py` | SwiGLU | Fused `gate*SiLU(up)`, Llama FFN | ⭐⭐ |
 | 11 | `11_geglu.py` | GeGLU | Fused `gate*GELU(up)`, 对比 SwiGLU | ⭐⭐ |
 
-### Group 5: Reductions (12-20)
+### Group 5: Reductions (12-20, 29-31)
 | # | 文件 | Kernel | 关键概念 | 难度 |
 |---|------|--------|----------|------|
 | 12 | `12_vector_sum.py` | Vector Sum | `tl.sum`, block 内 reduction, atomic_add | ⭐ |
@@ -43,41 +43,85 @@
 | 18 | `18_cross_entropy.py` | Cross Entropy Loss | log_softmax, max-subtraction trick | ⭐⭐⭐ |
 | 19 | `19_cumsum.py` | Cumsum / Prefix Scan | Block-level scan, cross-block carry | ⭐⭐⭐ |
 | 20 | `20_gradient_clipping.py` | Gradient Clipping | `tl.atomic_add`, 全局 norm reduction | ⭐⭐ |
+| 29 | `29_parallel_mean_var.py` | Parallel Mean+Var | E[X²]-(E[X])², tl.sum 并行归约 vs Welford 串行 | ⭐⭐ |
+| 30 | `30_argmax_reduce.py` | Argmax Reduce | 携带 index 的 reduction, argmax pattern | ⭐⭐ |
+| 31 | `31_topk_selection.py` | Top-K Selection | 阈值过滤 compaction, 比全排序更高效 | ⭐⭐⭐ |
 
-### Group 6: Normalizations (21-25)
+### Group 6: Loss Functions (32-34)
 | # | 文件 | Kernel | 关键概念 | 难度 |
 |---|------|--------|----------|------|
-| 21 | `21_layer_norm.py` | Layer Norm | 3-pass reduction, mean+var, affine | ⭐⭐⭐ |
-| 22 | `22_rms_norm.py` | RMS Norm | 2-pass reduction, `tl.math.rsqrt` | ⭐⭐ |
-| 23 | `23_group_norm.py` | Group Norm | 分组 reduction, spatial dims | ⭐⭐⭐ |
-| 24 | `24_batch_norm.py` | BatchNorm1D | 跨 sample strided reduction | ⭐⭐⭐ |
-| 25 | `25_residual_add_norm.py` | Residual+LayerNorm | Multi-input fusion, skip connection | ⭐⭐⭐ |
+| 32 | `32_mse_loss.py` | Fused MSE Loss | elementwise diff² + reduction 融合 | ⭐⭐ |
+| 33 | `33_hinge_loss.py` | Fused Hinge Loss | max(0, margin-y*pred), 无分支比较 | ⭐⭐ |
+| 34 | `34_l1_loss.py` | Fused L1 Loss (MAE) | tl.abs (符号位清除), L1 vs MSE 鲁棒性 | ⭐⭐ |
 
-### Group 7: Position / Embedding / Optimizer (26-28)
+### Group 7: MobileNet 激活三件套 (35-37)
 | # | 文件 | Kernel | 关键概念 | 难度 |
 |---|------|--------|----------|------|
-| 26 | `26_rotary_embedding.py` | Rotary Embedding | Pairwise 2D rotation, RoPE | ⭐⭐ |
-| 27 | `27_embedding.py` | Embedding Lookup | Gather/scatter, 随机访存 | ⭐⭐ |
-| 28 | `28_adamw.py` | AdamW Optimizer | 多 buffer fusion, 6-in-1 kernel | ⭐⭐⭐ |
+| 35 | `35_relu6_clamp.py` | ReLU6 Clamp | min/max sandwich, int8 量化友好 | ⭐ |
+| 36 | `36_hard_sigmoid.py` | Hard Sigmoid | 分段线性近似, 省 exp → 推理加速 | ⭐ |
+| 37 | `37_hard_swish.py` | Hard Swish | x*hard_sigmoid(x), MobileNetV3 核心 | ⭐⭐ |
+
+### Group 8: BLAS Primitives & Data Movement (38-40)
+| # | 文件 | Kernel | 关键概念 | 难度 |
+|---|------|--------|----------|------|
+| 38 | `38_vector_dot.py` | Vector Dot Product | 内积 = elementwise× + reduction, 通向 matmul | ⭐⭐ |
+| 39 | `39_transpose_2d.py` | 2D Transpose | Coalesced vs strided access, shared memory 中转 | ⭐⭐ |
+| 40 | `40_concat.py` | Concatenation | 多 base pointer 访存, tl.where 条件选择 | ⭐ |
+
+### Group 9: Pooling & Attention Blocks (41-45)
+| # | 文件 | Kernel | 关键概念 | 难度 |
+|---|------|--------|----------|------|
+| 41 | `41_max_pool1d.py` | Max Pool 1D | Sliding window + max reduction | ⭐⭐ |
+| 42 | `42_avg_pool1d.py` | Avg Pool 1D | Sliding window + mean reduction | ⭐⭐ |
+| 43 | `43_scaled_dot_product.py` | Scaled Dot-Product | QK^T/sqrt(d) — Attention building block | ⭐⭐⭐ |
+| 44 | `44_causal_mask.py` | Causal Mask | 下三角 mask 生成 + softmax additive mask | ⭐⭐ |
+| 45 | `45_one_hot.py` | One-Hot Encoding | Scatter store 模式 vs gather | ⭐⭐ |
+
+### Group 10: Optimizer & Similarity Patterns (46-50)
+| # | 文件 | Kernel | 关键概念 | 难度 |
+|---|------|--------|----------|------|
+| 46 | `46_weight_decay.py` | Weight Decay | In-place 参数更新, AdamW 第一步 | ⭐ |
+| 47 | `47_ema.py` | Exponential Moving Avg | EMA = β*old+(1-β)*new, BatchNorm running stats | ⭐⭐ |
+| 48 | `48_cosine_similarity.py` | Cosine Similarity | dot/(|x||y|), 多统计量单 pass 融合 | ⭐⭐ |
+| 49 | `49_gelu_accurate.py` | Exact GELU vs Tanh Approx | tl.math.erf 用法, 精度 vs 速度 trade-off | ⭐⭐⭐ |
+| 50 | `50_fused_bias_gelu.py` | Fused Bias+GELU | 3-op fusion (load→add→activate→store), 省 50% HBM | ⭐⭐ |
 
 ## 运行方式
 
 ```bash
 # 单个文件
 python phase1_fundamentals/01_vector_add.py
-# ... (28 kernels total)
+# ... (50 kernels total)
 
 # 使用 Makefile
+# Group 1-4
 make run-vector-add   make run-sigmoid       make run-tanh
 make run-leaky-relu   make run-relu-bias     make run-scale-bias-residual
 make run-silu         make run-gelu          make run-dropout
 make run-swiglu       make run-geglu
-make run-vector-sum   make run-vector-max    make run-vector-norm  make run-welford
-make run-logsumexp    make run-softmax       make run-cross-entropy make run-cumsum
-make run-grad-clip
-make run-layernorm    make run-rms-norm      make run-group-norm  make run-batch-norm
-make run-residual-norm
-make run-rope         make run-embedding     make run-adamw
+
+# Group 5 (Reductions)
+make run-vector-sum   make run-vector-max    make run-vector-norm
+make run-welford      make run-logsumexp     make run-softmax
+make run-cross-entropy make run-cumsum       make run-grad-clip
+make run-mean-var     make run-argmax        make run-topk
+
+# Group 6 (Loss Functions)
+make run-mse          make run-hinge         make run-l1
+
+# Group 7 (MobileNet Activations)
+make run-relu6        make run-hard-sigmoid  make run-hard-swish
+
+# Group 8 (BLAS + Data Movement)
+make run-dot          make run-transpose     make run-concat
+
+# Group 9 (Pooling + Attention)
+make run-max-pool     make run-avg-pool      make run-scaled-dot
+make run-causal-mask  make run-one-hot
+
+# Group 10 (Optimizer + Similarity)
+make run-weight-decay make run-ema           make run-cosine-sim
+make run-gelu-exact   make run-fused-bias-gelu
 
 # 全部运行
 make run-phase1
@@ -90,9 +134,11 @@ make run-phase1
 make bench-phase1
 
 # 按 group 筛选
-python benchmarks/bench_phase1.py --category elementwise    # Group 1-4, 7
+python benchmarks/bench_phase1.py --category elementwise    # Group 1-4, 7-8
 python benchmarks/bench_phase1.py --category reduction      # Group 5
-python benchmarks/bench_phase1.py --category normalization  # Group 6
+python benchmarks/bench_phase1.py --category normalization  # Group 6 (old)
+python benchmarks/bench_phase1.py --category loss           # Group 6 (new)
+python benchmarks/bench_phase1.py --category pooling        # Group 9
 
 # 快速模式
 python benchmarks/bench_phase1.py --quick
@@ -104,6 +150,9 @@ python benchmarks/bench_phase1.py --quick
 2. **Group 2** (04-06): 理解 operator fusion 为什么重要
 3. **Group 3** (07-09): 学习复杂数学函数和随机数的 GPU 实现
 4. **Group 4** (10-11): 掌握 gated activation 模式 (Llama FFN 的核心)
-5. **Group 5** (12-20): reduction 全系列 — 从 sum/max 到 softmax/scan 到 grad clip
-6. **Group 6** (21-25): 归一化全家桶 — 理解 LN/BN/GN/RMS 的差异
-7. **Group 7** (26-28): 实战 — RoPE, Embedding, AdamW (LLM 训练全流程)
+5. **Group 5** (12-20, 29-31): reduction 全系列 — 从 sum/max 到 softmax/scan 到 topk
+6. **Group 6** (32-34): loss function 融合 — MSE/L1/Hinge
+7. **Group 7** (35-37): MobileNet 高效推理激活 — piecewise linear 近似
+8. **Group 8** (38-40): BLAS 基础 (dot product) + 数据搬运 (transpose/concat)
+9. **Group 9** (41-45): Pooling + Attention building blocks
+10. **Group 10** (46-50): 优化器 (weight decay/EMA) + GELU 精确 vs 近似

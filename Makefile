@@ -93,6 +93,50 @@ run-embedding:  ## Run 27 embedding kernel
 	python phase1_fundamentals/27_embedding.py
 run-adamw:  ## Run 28 AdamW kernel
 	python phase1_fundamentals/28_adamw.py
+run-mean-var:  ## Run 29 parallel mean+var (E[X²]-E[X]²) kernel
+	python phase1_fundamentals/29_parallel_mean_var.py
+run-argmax:  ## Run 30 argmax kernel
+	python phase1_fundamentals/30_argmax_reduce.py
+run-topk:  ## Run 31 topk kernel
+	python phase1_fundamentals/31_topk_selection.py
+run-mse:  ## Run 32 MSE loss kernel
+	python phase1_fundamentals/32_mse_loss.py
+run-hinge:  ## Run 33 hinge loss kernel
+	python phase1_fundamentals/33_hinge_loss.py
+run-l1:  ## Run 34 L1 loss kernel
+	python phase1_fundamentals/34_l1_loss.py
+run-relu6:  ## Run 35 ReLU6 kernel
+	python phase1_fundamentals/35_relu6_clamp.py
+run-hard-sigmoid:  ## Run 36 hard sigmoid kernel
+	python phase1_fundamentals/36_hard_sigmoid.py
+run-hard-swish:  ## Run 37 hard swish kernel
+	python phase1_fundamentals/37_hard_swish.py
+run-dot:  ## Run 38 dot product kernel
+	python phase1_fundamentals/38_vector_dot.py
+run-transpose:  ## Run 39 2D transpose kernel
+	python phase1_fundamentals/39_transpose_2d.py
+run-concat:  ## Run 40 concat kernel
+	python phase1_fundamentals/40_concat.py
+run-max-pool:  ## Run 41 max pool kernel
+	python phase1_fundamentals/41_max_pool1d.py
+run-avg-pool:  ## Run 42 avg pool kernel
+	python phase1_fundamentals/42_avg_pool1d.py
+run-scaled-dot:  ## Run 43 scaled dot product kernel
+	python phase1_fundamentals/43_scaled_dot_product.py
+run-causal-mask:  ## Run 44 causal mask kernel
+	python phase1_fundamentals/44_causal_mask.py
+run-one-hot:  ## Run 45 one-hot kernel
+	python phase1_fundamentals/45_one_hot.py
+run-weight-decay:  ## Run 46 weight decay kernel
+	python phase1_fundamentals/46_weight_decay.py
+run-ema:  ## Run 47 EMA kernel
+	python phase1_fundamentals/47_ema.py
+run-cosine-sim:  ## Run 48 cosine similarity kernel
+	python phase1_fundamentals/48_cosine_similarity.py
+run-gelu-exact:  ## Run 49 exact GELU kernel
+	python phase1_fundamentals/49_gelu_accurate.py
+run-fused-bias-gelu:  ## Run 50 fused bias+GELU kernel
+	python phase1_fundamentals/50_fused_bias_gelu.py
 
 # All Phase 1
 run-phase1: run-vector-add run-sigmoid run-tanh run-leaky-relu \
@@ -101,7 +145,11 @@ run-phase1: run-vector-add run-sigmoid run-tanh run-leaky-relu \
            run-vector-sum run-vector-max run-vector-norm run-welford run-logsumexp \
            run-softmax run-cross-entropy run-cumsum run-grad-clip \
            run-layernorm run-rms-norm run-group-norm run-batch-norm run-residual-norm \
-           run-rope run-embedding run-adamw  ## Run all 28 Phase 1 kernels
+           run-rope run-embedding run-adamw run-mean-var \
+           run-argmax run-topk run-mse run-hinge run-l1 run-relu6 \
+           run-hard-sigmoid run-hard-swish run-dot run-transpose run-concat \
+           run-max-pool run-avg-pool run-scaled-dot run-causal-mask run-one-hot \
+           run-weight-decay run-ema run-cosine-sim run-gelu-exact run-fused-bias-gelu  ## Run all 50 Phase 1 kernels
 
 # ============================================================
 # Phase 2 — Compute
