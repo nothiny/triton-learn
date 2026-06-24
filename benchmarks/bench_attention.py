@@ -167,9 +167,9 @@ class AttentionBenchmark:
 
         # Your Triton kernels
         impls["flash_attn_v1 (Triton)"] = _load_fn(
-            "phase2_compute/04_flash_attention_v1", "flash_attention_v1")
+            "phase2_compute/07_flash_attention_v1", "flash_attention_v1")
         impls["flash_attn_v2 (Triton)"] = _load_fn(
-            "phase2_compute/05_flash_attention_v2", "flash_attention_v2")
+            "phase2_compute/08_flash_attention_v2", "flash_attention_v2")
 
         return impls
 

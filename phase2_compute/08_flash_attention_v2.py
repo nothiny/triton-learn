@@ -1,5 +1,5 @@
 """
-05_flash_attention_v2.py — Flash Attention v2 (Dao, 2023)
+08_flash_attention_v2.py — Flash Attention v2 (Dao, 2023)
 
 相比 v1 的改进:
   1. 减少 non-matmul FLOPs: 将 rescaling 移到外循环，减少 rescale 次数
@@ -39,7 +39,7 @@
   - v1 的并行化: KV 外循环，Q 内循环 → warp divergence 更高
   - v2 的并行化: Q 外循环 → 同一 warp 内的 threads 处理同一个 Q tile
 
-运行: python phase2_compute/05_flash_attention_v2.py
+运行: python phase2_compute/08_flash_attention_v2.py
 """
 
 import torch
@@ -199,7 +199,7 @@ def ref_attention_causal(q, k, v):
 
 def main():
     print("=" * 60)
-    print("05_flash_attention_v2 — FlashAttention v2 (Dao, 2023)")
+    print("08_flash_attention_v2 — FlashAttention v2 (Dao, 2023)")
     print("=" * 60)
 
     # Test both with and without causal masking

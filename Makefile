@@ -155,25 +155,51 @@ run-phase1: run-vector-add run-sigmoid run-tanh run-leaky-relu \
 # Phase 2 — Compute
 # ============================================================
 
+# --- MatMul (01-06) ---
 run-matmul-naive:  ## Run naive matmul
 	python phase2_compute/01_matmul_naive.py
 
 run-matmul-tiled:  ## Run tiled matmul (production-grade)
 	python phase2_compute/02_matmul_tiled.py
 
-run-matmul-autotuned:  ## Run autotuned matmul
+run-matmul-autotuned:  ## Run autotuned matmul (GROUP_M swizzling)
 	python phase2_compute/03_matmul_autotuned.py
 
+run-split-k:  ## Run split-K parallel GEMM
+	python phase2_compute/04_matmul_split_k.py
+
+run-fused-matmul:  ## Run fused matmul + bias + activation
+	python phase2_compute/05_matmul_fused_bias_act.py
+
+run-transpose-variants:  ## Run 4 transpose variants (NN/NT/TN/TT)
+	python phase2_compute/06_matmul_transpose.py
+
+# --- Attention (07-13) ---
 run-flash-v1:  ## Run Flash Attention v1
-	python phase2_compute/04_flash_attention_v1.py
+	python phase2_compute/07_flash_attention_v1.py
 
 run-flash-v2:  ## Run Flash Attention v2
-	python phase2_compute/05_flash_attention_v2.py
+	python phase2_compute/08_flash_attention_v2.py
 
 run-conv:  ## Run depthwise conv
-	python phase2_compute/06_depthwise_conv.py
+	python phase2_compute/09_depthwise_conv.py
 
-run-phase2: run-matmul-naive run-matmul-tiled run-matmul-autotuned  ## Run all Phase 2 kernels
+run-flash-bwd:  ## Run Flash Attention backward pass
+	python phase2_compute/10_flash_attention_backward.py
+
+run-gqa:  ## Run Grouped Query Attention (GQA)
+	python phase2_compute/11_grouped_query_attention.py
+
+run-sliding-window:  ## Run sliding window attention (Mistral-style)
+	python phase2_compute/12_sliding_window_attention.py
+
+run-attention-bias:  ## Run attention with bias (ALiBi)
+	python phase2_compute/13_attention_bias.py
+
+run-phase2: run-matmul-naive run-matmul-tiled run-matmul-autotuned \
+           run-split-k run-fused-matmul run-transpose-variants \
+           run-flash-v1 run-flash-v2 run-conv \
+           run-flash-bwd run-gqa run-sliding-window run-attention-bias  ## Run all Phase 2 kernels
 
 # ============================================================
 # Benchmarking

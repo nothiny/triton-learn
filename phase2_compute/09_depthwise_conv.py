@@ -1,5 +1,5 @@
 """
-06_depthwise_conv.py — Depthwise Convolution in Triton
+09_depthwise_conv.py — Depthwise Convolution in Triton
 
 Depthwise conv: 每个输入 channel 有独立的 filter kernel。
 对于 (N, C, H, W) 输入和 (C, 1, KH, KW) filter (groups=C):
@@ -17,7 +17,7 @@ Depthwise conv: 每个输入 channel 有独立的 filter kernel。
   - 算术强度比 GEMM 低得多（每个输出元素只做 KH*KW 次乘加）
   - 所以通常是 memory-bound
 
-运行: python phase2_compute/06_depthwise_conv.py
+运行: python phase2_compute/09_depthwise_conv.py
 """
 
 import torch
@@ -199,7 +199,7 @@ def ref_depthwise_conv(x, weight, stride=1, padding=0):
 
 def main():
     print("=" * 60)
-    print("06_depthwise_conv — Triton vs PyTorch")
+    print("09_depthwise_conv — Triton vs PyTorch")
     print("=" * 60)
 
     # Standard depthwise conv: MobileNet-style

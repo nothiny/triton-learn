@@ -1,5 +1,5 @@
 """
-04_flash_attention_v1.py — Flash Attention v1 (Dao et al., 2022)
+07_flash_attention_v1.py — Flash Attention v1 (Dao et al., 2022)
 
 学习目标：
   - 理解 Flash Attention 的核心算法：online softmax + tiling
@@ -27,7 +27,7 @@
     Write O_i to HBM
   End For
 
-运行: python phase2_compute/04_flash_attention_v1.py
+运行: python phase2_compute/07_flash_attention_v1.py
 """
 
 import torch
@@ -166,7 +166,7 @@ def ref_attention(q, k, v):
 
 def main():
     print("=" * 60)
-    print("04_flash_attention_v1 — FlashAttention (Dao et al., 2022)")
+    print("07_flash_attention_v1 — FlashAttention (Dao et al., 2022)")
     print("=" * 60)
 
     # 小规模测试

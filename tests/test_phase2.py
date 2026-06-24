@@ -53,14 +53,14 @@ class TestMatmulTiled:
 
 
 class TestFlashAttentionV1:
-    """Test 04_flash_attention_v1.py"""
+    """Test 07_flash_attention_v1.py"""
 
     def test_correctness(self):
         flash_attention_v1 = _import_func(
-            "phase2_compute/04_flash_attention_v1", "flash_attention_v1"
+            "phase2_compute/07_flash_attention_v1", "flash_attention_v1"
         )
         ref_attention = _import_func(
-            "phase2_compute/04_flash_attention_v1", "ref_attention"
+            "phase2_compute/07_flash_attention_v1", "ref_attention"
         )
         B, H, N, D = 1, 2, 128, 64
         q = torch.randn(B, H, N, D, device="cuda", dtype=torch.float16)
@@ -70,3 +70,176 @@ class TestFlashAttentionV1:
         expected = ref_attention(q.float(), k.float(), v.float()).half()
         max_diff = (out.float() - expected.float()).abs().max().item()
         assert max_diff < 0.1, f"Flash attention mismatch: max_diff={max_diff:.4f}"
+
+
+class TestFlashAttentionBackward:
+    """Test 10_flash_attention_backward.py"""
+
+    def test_forward_with_lse(self):
+        fwd = _import_func(
+            "phase2_compute/10_flash_attention_backward", "flash_attention_fwd_with_lse"
+        )
+        ref = _import_func(
+            "phase2_compute/10_flash_attention_backward", "ref_attention_with_grad"
+        )
+        B, H, N, D = 1, 2, 128, 64
+        q = torch.randn(B, H, N, D, device="cuda", dtype=torch.float16)
+        k = torch.randn(B, H, N, D, device="cuda", dtype=torch.float16)
+        v = torch.randn(B, H, N, D, device="cuda", dtype=torch.float16)
+        o, lse = fwd(q, k, v)
+        expected = ref(q.float(), k.float(), v.float()).half()
+        max_diff = (o.float() - expected.float()).abs().max().item()
+        assert max_diff < 0.05, f"Forward mismatch: {max_diff:.4e}"
+        assert lse.shape == (B * H, N)
+
+    def test_backward_non_causal(self):
+        bwd = _import_func(
+            "phase2_compute/10_flash_attention_backward", "flash_attention_bwd"
+        )
+        fwd = _import_func(
+            "phase2_compute/10_flash_attention_backward", "flash_attention_fwd_with_lse"
+        )
+        B, H, N, D = 1, 2, 128, 64
+        q = torch.randn(B, H, N, D, device="cuda", dtype=torch.float16)
+        k = torch.randn(B, H, N, D, device="cuda", dtype=torch.float16)
+        v = torch.randn(B, H, N, D, device="cuda", dtype=torch.float16)
+        o, lse = fwd(q, k, v)
+        do = torch.randn_like(o)
+        dq, dk, dv = bwd(q, k, v, o, do, lse, causal=False)
+        assert dq.shape == q.shape
+        assert dk.shape == k.shape
+        assert dv.shape == v.shape
+
+    def test_autograd_function(self):
+        flash_fn = _import_func(
+            "phase2_compute/10_flash_attention_backward", "flash_attention_with_grad"
+        )
+        B, H, N, D = 1, 2, 128, 64
+        q = torch.randn(B, H, N, D, device="cuda", dtype=torch.float16, requires_grad=True)
+        k = torch.randn(B, H, N, D, device="cuda", dtype=torch.float16, requires_grad=True)
+        v = torch.randn(B, H, N, D, device="cuda", dtype=torch.float16, requires_grad=True)
+        o = flash_fn(q, k, v, causal=False)
+        o.sum().backward()
+        assert q.grad is not None
+        assert k.grad is not None
+        assert v.grad is not None
+
+
+class TestGroupedQueryAttention:
+    """Test 11_grouped_query_attention.py"""
+
+    def test_correctness_gqa(self):
+        gqa = _import_func(
+            "phase2_compute/11_grouped_query_attention", "grouped_query_attention"
+        )
+        B, Hq, Hkv, N, D = 1, 8, 2, 128, 64
+        q = torch.randn(B, Hq, N, D, device="cuda", dtype=torch.float16)
+        kv = torch.randn(B, Hkv, N, D, device="cuda", dtype=torch.float16)
+        out = gqa(q, kv, kv, causal=False)
+        expected = torch.nn.functional.scaled_dot_product_attention(
+            q, kv, kv, enable_gqa=True)
+        max_diff = (out.float() - expected.float()).abs().max().item()
+        assert max_diff < 0.05, f"GQA mismatch: {max_diff:.4e}"
+
+    def test_correctness_mqa(self):
+        gqa = _import_func(
+            "phase2_compute/11_grouped_query_attention", "grouped_query_attention"
+        )
+        B, Hq, Hkv, N, D = 1, 8, 1, 128, 64  # MQA: single KV head
+        q = torch.randn(B, Hq, N, D, device="cuda", dtype=torch.float16)
+        kv = torch.randn(B, Hkv, N, D, device="cuda", dtype=torch.float16)
+        out = gqa(q, kv, kv, causal=True)
+        expected = torch.nn.functional.scaled_dot_product_attention(
+            q, kv, kv, enable_gqa=True, is_causal=True)
+        max_diff = (out.float() - expected.float()).abs().max().item()
+        assert max_diff < 0.05, f"MQA mismatch: {max_diff:.4e}"
+
+
+class TestSlidingWindowAttention:
+    """Test 12_sliding_window_attention.py"""
+
+    def test_correctness_causal(self):
+        swa = _import_func(
+            "phase2_compute/12_sliding_window_attention", "sliding_window_attention"
+        )
+        ref = _import_func(
+            "phase2_compute/12_sliding_window_attention", "ref_sliding_window"
+        )
+        B, H, N, D, win = 1, 2, 128, 64, 32
+        q = torch.randn(B, H, N, D, device="cuda", dtype=torch.float16)
+        k = torch.randn(B, H, N, D, device="cuda", dtype=torch.float16)
+        v = torch.randn(B, H, N, D, device="cuda", dtype=torch.float16)
+        out = swa(q, k, v, window_size=win, causal=True)
+        expected = ref(q.float(), k.float(), v.float(), window_size=win, causal=True).half()
+        max_diff = (out.float() - expected.float()).abs().max().item()
+        assert max_diff < 0.05, f"Sliding window mismatch: {max_diff:.4e}"
+
+    def test_correctness_bidirectional(self):
+        swa = _import_func(
+            "phase2_compute/12_sliding_window_attention", "sliding_window_attention"
+        )
+        ref = _import_func(
+            "phase2_compute/12_sliding_window_attention", "ref_sliding_window"
+        )
+        B, H, N, D, win = 1, 2, 128, 64, 32
+        q = torch.randn(B, H, N, D, device="cuda", dtype=torch.float16)
+        k = torch.randn(B, H, N, D, device="cuda", dtype=torch.float16)
+        v = torch.randn(B, H, N, D, device="cuda", dtype=torch.float16)
+        out = swa(q, k, v, window_size=win, causal=False)
+        expected = ref(q.float(), k.float(), v.float(), window_size=win, causal=False).half()
+        max_diff = (out.float() - expected.float()).abs().max().item()
+        assert max_diff < 0.05, f"Bidirectional SWA mismatch: {max_diff:.4e}"
+
+    def test_full_window(self):
+        """window_size >= N should degrade to full attention"""
+        swa = _import_func(
+            "phase2_compute/12_sliding_window_attention", "sliding_window_attention"
+        )
+        ref = _import_func(
+            "phase2_compute/12_sliding_window_attention", "ref_sliding_window"
+        )
+        B, H, N, D, win = 1, 2, 128, 64, 256  # win > N
+        q = torch.randn(B, H, N, D, device="cuda", dtype=torch.float16)
+        k = torch.randn(B, H, N, D, device="cuda", dtype=torch.float16)
+        v = torch.randn(B, H, N, D, device="cuda", dtype=torch.float16)
+        out = swa(q, k, v, window_size=win, causal=True)
+        expected = ref(q.float(), k.float(), v.float(), window_size=win, causal=True).half()
+        max_diff = (out.float() - expected.float()).abs().max().item()
+        assert max_diff < 0.05, f"Full window mismatch: {max_diff:.4e}"
+
+
+class TestAttentionBias:
+    """Test 13_attention_bias.py"""
+
+    def test_vector_bias(self):
+        fab = _import_func(
+            "phase2_compute/13_attention_bias", "flash_attention_with_bias"
+        )
+        build = _import_func(
+            "phase2_compute/13_attention_bias", "build_alibi_bias"
+        )
+        ref = _import_func(
+            "phase2_compute/13_attention_bias", "ref_attention_with_bias"
+        )
+        B, H, N, D = 1, 4, 128, 64
+        q = torch.randn(B, H, N, D, device="cuda", dtype=torch.float16)
+        k = torch.randn(B, H, N, D, device="cuda", dtype=torch.float16)
+        v = torch.randn(B, H, N, D, device="cuda", dtype=torch.float16)
+        bias = build(N, H, q.device).expand(B, H, 1, N)
+        out = fab(q, k, v, bias, causal=True)
+        expected = ref(q.float(), k.float(), v.float(), bias.float(), causal=True).half()
+        max_diff = (out.float() - expected.float()).abs().max().item()
+        assert max_diff < 0.05, f"Vector bias mismatch: {max_diff:.4e}"
+
+    def test_no_bias(self):
+        fab = _import_func(
+            "phase2_compute/13_attention_bias", "flash_attention_with_bias"
+        )
+        B, H, N, D = 1, 4, 128, 64
+        q = torch.randn(B, H, N, D, device="cuda", dtype=torch.float16)
+        k = torch.randn(B, H, N, D, device="cuda", dtype=torch.float16)
+        v = torch.randn(B, H, N, D, device="cuda", dtype=torch.float16)
+        out = fab(q, k, v, bias=None, causal=False)
+        expected = torch.nn.functional.scaled_dot_product_attention(q, k, v)
+        max_diff = (out.float() - expected.float()).abs().max().item()
+        assert max_diff < 0.05, f"No-bias mismatch: {max_diff:.4e}"
