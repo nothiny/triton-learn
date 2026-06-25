@@ -31,6 +31,7 @@ import math
 import torch
 import triton
 import triton.language as tl
+from triton.testing import do_bench
 
 
 # Activation type constants (integer, passed as tl.constexpr to kernel)
@@ -223,31 +224,9 @@ def main():
             b = torch.randn(K, N, device="cuda", dtype=torch.float16)
             bias = torch.randn(N, device="cuda", dtype=torch.float16)
 
-            warmup, rep = 10, 30
-
-            # Fused
-            for _ in range(warmup):
-                fused_matmul(a, b, bias, activation=act)
-            torch.cuda.synchronize()
-            start = torch.cuda.Event(enable_timing=True)
-            end = torch.cuda.Event(enable_timing=True)
-            start.record()
-            for _ in range(rep):
-                fused_matmul(a, b, bias, activation=act)
-            end.record()
-            torch.cuda.synchronize()
-            ms_fused = start.elapsed_time(end) / rep
-
-            # Unfused
-            for _ in range(warmup):
-                unfused_matmul_bias_act(a, b, bias, activation=act)
-            torch.cuda.synchronize()
-            start.record()
-            for _ in range(rep):
-                unfused_matmul_bias_act(a, b, bias, activation=act)
-            end.record()
-            torch.cuda.synchronize()
-            ms_unfused = start.elapsed_time(end) / rep
+            # Timing
+            ms_fused = do_bench(lambda: fused_matmul(a, b, bias, activation=act))
+            ms_unfused = do_bench(lambda: unfused_matmul_bias_act(a, b, bias, activation=act))
 
             speedup = ms_unfused / ms_fused
             label = f"{M}×{K}×{N} + {act}"

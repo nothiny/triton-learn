@@ -38,6 +38,7 @@ Coalesced Access 分析:
 import torch
 import triton
 import triton.language as tl
+from triton.testing import do_bench
 
 
 @triton.autotune(
@@ -257,24 +258,13 @@ def main():
     a_t = torch.randn(K, M, device="cuda", dtype=torch.float16)
     b_t = torch.randn(N, K, device="cuda", dtype=torch.float16)
 
-    warmup, rep = 10, 30
     for name, fn, a_in, b_in in [
         ("NN", matmul_nn, a_nn, b_nn),
         ("NT", matmul_nt, a_nn, b_t),
         ("TN", matmul_tn, a_t, b_nn),
         ("TT", matmul_tt, a_t, b_t),
     ]:
-        for _ in range(warmup):
-            fn(a_in, b_in)
-        torch.cuda.synchronize()
-        start = torch.cuda.Event(enable_timing=True)
-        end = torch.cuda.Event(enable_timing=True)
-        start.record()
-        for _ in range(rep):
-            fn(a_in, b_in)
-        end.record()
-        torch.cuda.synchronize()
-        ms = start.elapsed_time(end) / rep
+        ms = do_bench(lambda fn=fn, a_in=a_in, b_in=b_in: fn(a_in, b_in))
         tflops = (2 * M * N * K) / (ms * 1e-3) / 1e12
         print(f"  {name}: {ms:.3f}ms  {tflops:.1f} TFLOPS")
 

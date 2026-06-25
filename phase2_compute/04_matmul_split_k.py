@@ -33,6 +33,7 @@ Split-K 原理:
 import torch
 import triton
 import triton.language as tl
+from triton.testing import do_bench
 
 
 @triton.jit
@@ -236,28 +237,8 @@ def main():
         c_std = matmul_standard(a, b)
 
         # Timing
-        warmup, rep = 10, 50
-        for _ in range(warmup):
-            matmul_split_k(a, b, split_k=split_k)
-        torch.cuda.synchronize()
-        start = torch.cuda.Event(enable_timing=True)
-        end = torch.cuda.Event(enable_timing=True)
-        start.record()
-        for _ in range(rep):
-            matmul_split_k(a, b, split_k=split_k)
-        end.record()
-        torch.cuda.synchronize()
-        ms_split = start.elapsed_time(end) / rep
-
-        for _ in range(warmup):
-            matmul_standard(a, b)
-        torch.cuda.synchronize()
-        start.record()
-        for _ in range(rep):
-            matmul_standard(a, b)
-        end.record()
-        torch.cuda.synchronize()
-        ms_std = start.elapsed_time(end) / rep
+        ms_split = do_bench(lambda: matmul_split_k(a, b, split_k=split_k))
+        ms_std = do_bench(lambda: matmul_standard(a, b))
 
         tflops_split = (2 * M * N * K) / (ms_split * 1e-3) / 1e12
         tflops_std = (2 * M * N * K) / (ms_std * 1e-3) / 1e12

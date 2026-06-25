@@ -30,9 +30,11 @@
 """
 
 import math
+import statistics
 import torch
 import triton
 import triton.language as tl
+from triton.testing import do_bench
 
 
 @triton.jit
@@ -248,46 +250,15 @@ def bench_gqa_vs_mha(
     batch: int, n_heads_q: int, n_heads_kv: int,
     seq_len: int, d_head: int,
     causal: bool = True,
-    warmup: int = 10, rep: int = 50,
 ):
     """Benchmark GQA Triton vs PyTorch SDPA (both with GQA)."""
     q = torch.randn(batch, n_heads_q, seq_len, d_head, device="cuda", dtype=torch.float16)
     k = torch.randn(batch, n_heads_kv, seq_len, d_head, device="cuda", dtype=torch.float16)
     v = torch.randn(batch, n_heads_kv, seq_len, d_head, device="cuda", dtype=torch.float16)
 
-    # --- Triton GQA ---
-    for _ in range(warmup):
-        grouped_query_attention(q, k, v, causal=causal)
-    torch.cuda.synchronize()
-
-    start = torch.cuda.Event(enable_timing=True)
-    end = torch.cuda.Event(enable_timing=True)
-    times_triton = []
-    for _ in range(rep):
-        start.record()
-        grouped_query_attention(q, k, v, causal=causal)
-        end.record()
-        torch.cuda.synchronize()
-        times_triton.append(start.elapsed_time(end))
-
-    # --- PyTorch SDPA (GQA) ---
-    for _ in range(warmup):
-        torch.nn.functional.scaled_dot_product_attention(
-            q, k, v, is_causal=causal, enable_gqa=True)
-    torch.cuda.synchronize()
-
-    times_sdpa = []
-    for _ in range(rep):
-        start.record()
-        torch.nn.functional.scaled_dot_product_attention(
-            q, k, v, is_causal=causal, enable_gqa=True)
-        end.record()
-        torch.cuda.synchronize()
-        times_sdpa.append(start.elapsed_time(end))
-
-    import statistics
-    t_triton = statistics.median(times_triton)
-    t_sdpa = statistics.median(times_sdpa)
+    t_triton = do_bench(lambda: grouped_query_attention(q, k, v, causal=causal))
+    t_sdpa = do_bench(lambda: torch.nn.functional.scaled_dot_product_attention(
+        q, k, v, is_causal=causal, enable_gqa=True))
     return t_triton, t_sdpa
 
 

@@ -12,6 +12,7 @@
 import torch
 import triton
 import triton.language as tl
+from triton.testing import do_bench
 
 
 @triton.autotune(
@@ -163,19 +164,7 @@ def main():
         max_diff = (c_triton.float() - c_torch.float()).abs().max().item()
 
         # Performance
-        n_iter = 100
-        for _ in range(25):
-            matmul_autotuned(a, b)
-        torch.cuda.synchronize()
-
-        start = torch.cuda.Event(enable_timing=True)
-        end = torch.cuda.Event(enable_timing=True)
-        start.record()
-        for _ in range(n_iter):
-            matmul_autotuned(a, b)
-        end.record()
-        torch.cuda.synchronize()
-        ms = start.elapsed_time(end) / n_iter
+        ms = do_bench(lambda: matmul_autotuned(a, b))
         tflops = (2 * M * N * K) / (ms * 1e-3) / 1e12
 
         status = "✅" if max_diff < 0.01 else "❌"

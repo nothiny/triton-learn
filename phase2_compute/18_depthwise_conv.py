@@ -23,6 +23,7 @@ Depthwise conv: 每个输入 channel 有独立的 filter kernel。
 import torch
 import triton
 import triton.language as tl
+from triton.testing import do_bench
 
 
 @triton.jit
@@ -223,27 +224,8 @@ def main():
     print(f"  Max diff: {max_diff:.6e}  {status}")
 
     # Performance
-    n_iter = 100
-    for _ in range(10):
-        depthwise_conv(x, weight, stride=stride, padding=padding)
-    torch.cuda.synchronize()
-
-    start = torch.cuda.Event(enable_timing=True)
-    end = torch.cuda.Event(enable_timing=True)
-
-    start.record()
-    for _ in range(n_iter):
-        depthwise_conv(x, weight, stride=stride, padding=padding)
-    end.record()
-    torch.cuda.synchronize()
-    triton_ms = start.elapsed_time(end) / n_iter
-
-    start.record()
-    for _ in range(n_iter):
-        ref_depthwise_conv(x, weight, stride=stride, padding=padding)
-    end.record()
-    torch.cuda.synchronize()
-    torch_ms = start.elapsed_time(end) / n_iter
+    triton_ms = do_bench(lambda: depthwise_conv(x, weight, stride=stride, padding=padding))
+    torch_ms = do_bench(lambda: ref_depthwise_conv(x, weight, stride=stride, padding=padding))
 
     # Memory bandwidth analysis
     in_bytes = x.numel() * x.element_size()
