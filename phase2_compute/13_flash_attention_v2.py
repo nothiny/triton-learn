@@ -50,7 +50,8 @@ import triton.language as tl
 @triton.jit
 def flash_attention_v2_fwd_kernel(
     q_ptr, k_ptr, v_ptr, o_ptr,
-    BATCH, N_HEADS, N_CTX, D_HEAD,
+    BATCH, N_HEADS, N_CTX,
+    D_HEAD: tl.constexpr,     # 必须是 constexpr: tl.arange 需要
     stride_qb, stride_qh, stride_qm,
     stride_kb, stride_kh, stride_kn,
     stride_vb, stride_vh, stride_vn,
