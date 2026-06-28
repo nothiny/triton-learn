@@ -34,38 +34,41 @@
 |---|------|------|----------|----------|
 | 12 | `23_phase4_compiler_internals.md` | ⭐ Triton 编译器内部：AST→TTIR、Lowering 追踪、Pipelining、寄存器分配、Autotuner、PTX→SASS | 1 hr | 03, 13 |
 | 13 | `24_phase4_mlir_framework.md` | ⭐ MLIR 框架深度：核心抽象、`tt`/`ttg` Dialect 设计、Pass 系统、Pattern Rewriting | 45 min | 03, 23 |
+| 14 | `25_phase4_layout_encoding.md` | ⭐ Layout Encoding 完全指南：5 种 Layout 类型、convert_layout 代价、type-driven lowering | 35 min | 03, 24 |
+| 15 | `26_phase4_register_occupancy.md` | ⭐ 寄存器分配与 Occupancy：三资源约束、spill 检测、num_warps/BLOCK/num_stages 权衡 | 30 min | 10, 23 |
+| 16 | `27_phase4_ir_debugging.md` | IR 级性能调试方法论：4 种常见问题的诊断流程 + 速查表 | 25 min | 23, 25, 26 |
 
 ### 实践篇（反向传播与集成）
 
 | # | 文件 | 内容 | 预计时间 | 前置知识 |
 |---|------|------|----------|----------|
-| 14 | `17_triton_autograd.md` | Triton 反向传播：写 Backward + Autograd 集成 | 45 min | 01 + PyTorch 基础 |
+| 17 | `17_triton_autograd.md` | Triton 反向传播：写 Backward + Autograd 集成 | 45 min | 01 + PyTorch 基础 |
 
 ### 生产篇（工业级 Triton）
 
 | # | 文件 | 内容 | 预计时间 | 前置知识 |
 |---|------|------|----------|----------|
-| 15 | `19_block_pointer_api.md` | ⭐ Block Pointer API 完全指南：`make_block_ptr`、`advance`、`boundary_check`、`order` | 40 min | 01, 02 + 写过 tiled GEMM |
-| 16 | `20_tma_async_copy.md` | TMA 与异步数据搬运：`cp.async`→TMA 演进、Hopper 硬件、warp specialization | 35 min | 00, 02, 19 |
-| 17 | `21_persistent_kernels.md` | Persistent Kernel 与 Stream-K：atomic work dispatch、动态 K 分解 | 30 min | 01 + `02_matmul_tiled.py` |
-| 18 | `22_production_checklist.md` | 生产级 Triton Kernel 优化清单：代码/内存/计算/调度/数值/调优/测试/Profiling | 30 min | 01, 02, 19 |
+| 18 | `19_block_pointer_api.md` | ⭐ Block Pointer API 完全指南：`make_block_ptr`、`advance`、`boundary_check`、`order` | 40 min | 01, 02 + 写过 tiled GEMM |
+| 19 | `20_tma_async_copy.md` | TMA 与异步数据搬运：`cp.async`→TMA 演进、Hopper 硬件、warp specialization | 35 min | 00, 02, 19 |
+| 20 | `21_persistent_kernels.md` | Persistent Kernel 与 Stream-K：atomic work dispatch、动态 K 分解 | 30 min | 01 + `02_matmul_tiled.py` |
+| 21 | `22_production_checklist.md` | 生产级 Triton Kernel 优化清单：代码/内存/计算/调度/数值/调优/测试/Profiling | 30 min | 01, 02, 19 |
 
 ### 扩展篇（架构与迁移）
 
 | # | 文件 | 内容 | 预计时间 | 前置知识 |
 |---|------|------|----------|----------|
-| 19 | `10_hopper_architecture.md` | Hopper (H100) 架构：wgmma/TMA/FP8/cluster | 30 min | 00, 09 |
-| 20 | `11_cuda_to_triton.md` | CUDA → Triton 迁移指南：概念映射、代码翻译 | 20 min | 01 + CUDA 经验 |
-| 21 | `14_kernel_patterns.md` | 常见 Kernel 模式：reduce/scan/gather/conv | 30 min | 01, 02 |
+| 22 | `10_hopper_architecture.md` | Hopper (H100) 架构：wgmma/TMA/FP8/cluster | 30 min | 00, 09 |
+| 23 | `11_cuda_to_triton.md` | CUDA → Triton 迁移指南：概念映射、代码翻译 | 20 min | 01 + CUDA 经验 |
+| 24 | `14_kernel_patterns.md` | 常见 Kernel 模式：reduce/scan/gather/conv | 30 min | 01, 02 |
 
 ### 参考篇（按需查阅）
 
 | # | 文件 | 内容 | 预计时间 | 前置知识 |
 |---|------|------|----------|----------|
-| 22 | `13_triton_internals.md` | Triton 内部：JIT/Cache/driver API | 20 min | 03 |
-| 23 | `04_cutile_preview.md` | CUTILE 预览：Layout 代数、MMA Atom | 20 min | 学完 Phase 1-2 后 |
-| 24 | `05_benchmarking_methodology.md` | Benchmark 方法论：正确测量 GPU 性能 | 30 min | 01 |
-| 25 | `15_multi_gpu.md` | Multi-GPU：NVLink/all-reduce/tensor parallelism | 20 min | 01 |
+| 25 | `13_triton_internals.md` | Triton 内部：JIT/Cache/driver API | 20 min | 03 |
+| 26 | `04_cutile_preview.md` | CUTILE 预览：Layout 代数、MMA Atom | 20 min | 学完 Phase 1-2 后 |
+| 27 | `05_benchmarking_methodology.md` | Benchmark 方法论：正确测量 GPU 性能 | 30 min | 01 |
+| 28 | `15_multi_gpu.md` | Multi-GPU：NVLink/all-reduce/tensor parallelism | 20 min | 01 |
 
 ## 怎么用
 
