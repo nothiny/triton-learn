@@ -1,45 +1,15 @@
-# Custom MLIR Pass
+# Custom MLIR Pass — 参考
 
-## Overview
+## 当前状态
 
-Triton 的编译器管线基于 MLIR (Multi-Level Intermediate Representation)。
-虽然 Triton 提供了完整的编译管线，理解 pass 机制有助于深入理解编译器工作原理。
+自定义 pass 的教学内容已整合到 `13_custom_pass.py` 中。
+Python pass API 在 Triton 3.x 中仍在发展，最稳定的分析方法是 Python AST 分析。
 
-## 概念
+## 学习路径
 
-- **MLIR Pass**: 对 IR 进行转换的基本单元
-- **Dialect**: 特定领域的操作和类型的集合（如 `tt`, `ttg`）
-- **Conversion Pass**: 将一种 dialect 降低到另一种
-
-## Triton Pass Pipeline
-
-```
-Python AST
-  │
-  ▼
-TTIR (tt dialect)
-  │ TritonInliner, TritonCombineOps
-  ▼
-TTIR (optimized)
-  │ ConvertTritonToTritonGPU  ← 最关键的 pass
-  ▼
-TTGIR (tt + ttg dialect, with layout)
-  │ TritonGPUPipeline, Prefetch, AccelerateMatmul, ...
-  ▼
-TTGIR (optimized)
-  │ ConvertTritonGPUToLLVM
-  ▼
-LLVM IR
-  │ LLVM NVPTX backend
-  ▼
-PTX
-```
-
-## 学习建议
-
-1. 先读懂 `notes/03_triton_compiler_pipeline.md` 中每个 pass 的作用
-2. 用 `01_dump_ir.py` 实际观察每个 pass 前后的 IR 变化
-3. 阅读 Triton 源码中的 pass 定义: `triton/lib/Conversion/`, `triton/lib/Dialect/`
+1. 运行 `python phase4_compiler/13_custom_pass.py` 学习 AST 分析工具
+2. 阅读 Triton 源码中的 pass 定义: `triton/lib/Conversion/`, `triton/lib/Dialect/`
+3. 深入了解: [MLIR Pass 文档](https://mlir.llvm.org/docs/PassManagement/)
 
 ## References
 

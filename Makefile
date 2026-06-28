@@ -248,6 +248,18 @@ check-gpu:  ## Print GPU hardware specification
 diff-results:  ## Compare two benchmark result JSON files
 	python benchmarks/compare_results.py benchmarks/results/
 
+run-chunk-delta:  ## Run Chunked Gated Delta Product operator
+	python phase3_production/06_chunk_gated_delta_product.py
+
+run-kkt-solve:  ## Run fused KKT+Solve kernel (GDN intra-chunk)
+	python phase3_production/07_chunk_delta_rule_fwd_intra.py
+
+run-recurrent-gdn:  ## Run fused recurrent GDN kernel
+	python phase3_production/08_fused_recurrent_gdn.py
+
+run-cumprod-hh:  ## Run chunk cumprod Householder (fwd+bwd)
+	python phase3_production/09_chunk_cumprod_householder.py
+
 # --- Optional SotA dependencies ---
 
 install-flash-attn:  ## Install flash-attn (Tri Dao's official implementation)
@@ -267,17 +279,72 @@ profile-flash:  ## Profile Flash Attention v2 with ncu
 	ncu --set full -o reports/flash_attn_v2 python phase2_compute/05_flash_attention_v2.py
 
 # ============================================================
-# Phase 3 — Compiler Internals
+# Phase 4 — Compiler Internals (13-tutorial series)
 # ============================================================
 
-dump-ir:  ## Dump Triton IR stages (TTIR → TTGIR → LLVM → PTX)
-	python phase3_compiler/01_dump_ir.py
+run-compiler-01:  ## 01 First contact with 4-layer IR
+	python phase4_compiler/01_first_ir.py
+run-compiler-02:  ## 02 TTIR language deep dive
+	python phase4_compiler/02_ttir_language.py
+run-compiler-03:  ## 03 TTIR → TTGIR: layout encoding appears
+	python phase4_compiler/03_to_ttgir.py
+run-compiler-04:  ## 04 Layout system: 5 layout types
+	python phase4_compiler/04_layout_system.py
+run-compiler-05:  ## 05 Layout conversion cost
+	python phase4_compiler/05_convert_layout.py
+run-compiler-06:  ## 06 LLVM IR: registers, addresses, branches
+	python phase4_compiler/06_llvm_ir.py
+run-compiler-07:  ## 07 PTX assembly deep read
+	python phase4_compiler/07_ptx_assembly.py
+run-compiler-08:  ## 08 Pass pipeline overview
+	python phase4_compiler/08_pass_pipeline.py
+run-compiler-09:  ## 09 Software pipelining & prefetch
+	python phase4_compiler/09_pipeline_prefetch.py
+run-compiler-10:  ## 10 Register pressure & resource constraints
+	python phase4_compiler/10_register_pressure.py
+run-compiler-11:  ## 11 Debugging with IR (4 common issues)
+	python phase4_compiler/11_debugging_with_ir.py
+run-compiler-12:  ## 12 triton.compiler API
+	python phase4_compiler/12_compile_api.py
+run-compiler-13:  ## 13 Custom MLIR pass & AST analysis
+	python phase4_compiler/13_custom_pass.py
 
-layout-analysis:  ## Analyze layout encodings
-	python phase3_compiler/02_layout_analysis.py
+# Legacy aliases (for backward compatibility)
+dump-ir: run-compiler-01  ## [alias] Dump Triton IR stages
+layout-analysis: run-compiler-04  ## [alias] Analyze layout encodings
+ptx-analysis: run-compiler-07  ## [alias] Read and annotate generated PTX
 
-ptx-analysis:  ## Read and annotate generated PTX
-	python phase3_compiler/04_ptx_analysis.py
+# --- Phase 4 Advanced (14-21) ---
+run-compiler-14:  ## 14 @triton.jit internals: AST parsing, JITFunction
+	python phase4_compiler/14_ast_to_ttir.py
+run-compiler-15:  ## 15 Memory model: HBM→Shared→Register in each IR stage
+	python phase4_compiler/15_memory_model.py
+run-compiler-16:  ## 16 MMA/Tensor Core deep dive: Ampere vs Hopper
+	python phase4_compiler/16_mma_deep.py
+run-compiler-17:  ## 17 Single-op lowering trace: Python→TTIR→TTGIR→LLVM→PTX
+	python phase4_compiler/17_lowering_trace.py
+run-compiler-18:  ## 18 Autotuner internals: search, cache, best practices
+	python phase4_compiler/18_autotuner.py
+run-compiler-19:  ## 19 All Triton env vars reference + debugging workflows
+	python phase4_compiler/19_env_vars.py
+run-compiler-20:  ## 20 Triton source code guide: Python/C++ navigation
+	python phase4_compiler/20_source_guide.py
+run-compiler-21:  ## 21 PTX → SASS: disassembly, register allocation verification
+	python phase4_compiler/21_ptx_to_sass.py
+
+# --- Phase 4 MLIR Series (22-27) ---
+run-compiler-22:  ## 22 MLIR core concepts: Operation/Type/Attribute/Dialect
+	python phase4_compiler/22_mlir_core_concepts.py
+run-compiler-23:  ## 23 MLIR text format syntax deep dive
+	python phase4_compiler/23_mlir_text_format.py
+run-compiler-24:  ## 24 tt dialect: every op reference
+	python phase4_compiler/24_triton_tt_dialect.py
+run-compiler-25:  ## 25 ttg dialect: layout types, GPU ops
+	python phase4_compiler/25_triton_ttg_dialect.py
+run-compiler-26:  ## 26 MLIR Pass infrastructure + Pattern Rewriting
+	python phase4_compiler/26_mlir_pass_system.py
+run-compiler-27:  ## 27 IR analysis toolbox: stats, comparison, cache
+	python phase4_compiler/27_ir_analysis_tools.py
 
 # ============================================================
 # Testing
@@ -298,7 +365,7 @@ test-all:  ## Run all tests
 
 clean:  ## Remove caches and generated files
 	rm -rf __pycache__ phase1_fundamentals/__pycache__ phase2_compute/__pycache__
-	rm -rf phase3_compiler/__pycache__ utils/__pycache__ tests/__pycache__
+	rm -rf phase4_compiler/__pycache__ utils/__pycache__ tests/__pycache__
 	rm -rf .pytest_cache triton_cache/
 	rm -rf reports/
 	find . -name "*.ptx" -delete
