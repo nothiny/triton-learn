@@ -1,7 +1,7 @@
 [project]
-name = "triton-kernels"
+name = "triton-learn"
 version = "0.1.0"
-description = "Systematic GPU kernel learning project — Triton-first, compiler-aware, CUTILE-ready"
+description = "Systematic GPU kernel learning project — Triton from fundamentals to compiler internals"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

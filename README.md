@@ -195,7 +195,7 @@ make check-gpu                # GPU 硬件规格 + roofline ridge points
 ## 项目结构
 
 ```
-triton-kernels/
+triton-learn/
 ├── README.md
 ├── pyproject.toml
 ├── Makefile
