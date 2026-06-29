@@ -32,16 +32,13 @@ $$
 $$
 
 解读:
-$$
-\begin{aligned}
-\text{m16n8k16: 输出 tile 大小: } & M = 16,\ N = 8,\ K = 16 \\
-\text{row.col: } & \text{A 矩阵是 row-major, B 是 col-major（相对 PTX 来说）} \\
-\text{f32: } & \text{D（输出/累加）的类型} \\
-\text{f16: } & \text{A 的类型} \\
-\text{f16: } & \text{B 的类型} \\
-\text{f32: } & \text{C（累加器输入）的类型}
-\end{aligned}
-$$
+
+- **m16n8k16**: 输出 tile 大小: $M = 16,\ N = 8,\ K = 16$
+- **row.col**: A 矩阵是 row-major, B 是 col-major（相对 PTX 来说）
+- **f32** (第1个): D（输出/累加）的类型
+- **f16** (第1个): A 的类型
+- **f16** (第2个): B 的类型
+- **f32** (第2个): C（累加器输入）的类型
 
 ### 2.2 不同架构的 MMA 规格
 
