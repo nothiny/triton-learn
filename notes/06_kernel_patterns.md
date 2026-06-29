@@ -80,11 +80,13 @@ def reduce_kernel(x_ptr, out_ptr, N_COLS, BLOCK_SIZE: tl.constexpr):
 
 ---
 
-## 2. Scan（扫描）— 前缀和与累积
+## 2. Scan（扫描）— 从 Blelloch 算法到 Triton 实现
 
-### 2.1 概念
+> 分三层讲：**Blelloch 算法本身**（8 步交互演示）、**Triton 编译器怎么实现它**（warp shuffle + shared memory）、**你的代码为什么是错的**。
 
-Scan (prefix sum / cumulative sum):
+### 2.1 概念：Scan vs Reduce
+
+**Scan (prefix sum / cumulative sum)** — 每个输出依赖它之前的所有输入:
 
 $$
 \begin{aligned}
@@ -93,53 +95,342 @@ $$
 \end{aligned}
 $$
 
-应用:
-  - LayerNorm 的 mean/variance 计算
-  - 排序、基数排序
-  - Attention 的 causal masking
+应用场景: LayerNorm 的 mean/variance、排序/基数排序、Attention 的 causal masking、beam search。
 
-### 2.2 Triton 实现：Parallel Prefix Sum
+**Scan 比 Reduce 难在哪？**
 
-```python
-@triton.jit
-def inclusive_scan_kernel(x_ptr, out_ptr, N, BLOCK_SIZE: tl.constexpr):
-    """
-    Block-level inclusive scan (prefix sum).
-    使用 Blelloch scan 算法: O(log n) steps, O(n) work
-    """
-    pid = tl.program_id(0)
-    offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
-    mask = offsets < N
-    
-    x = tl.load(x_ptr + offsets, mask=mask, other=0.0)
-    
-    # Blelloch scan: 上扫 (up-sweep) + 下扫 (down-sweep)
-    # Up-sweep: 构建部分和树
-    for offset in [1, 2, 4, 8, 16, 32, 64, 128, 256]:
-        # 从相邻元素累加
-        prev = tl.where(tl.arange(0, BLOCK_SIZE) >= offset,
-                        x, tl.zeros_like(x))
-        # 需要 shift: shift right by offset
-        # (简化版 — 实际需要 tl.shift_right 或等效操作)
-        x = x + prev  # incomplete — 示意
-    
-    # [COMPILER] Triton 对 scan 的支持不如 reduce 原生
-    # 因为 scan 有依赖链，不能完全并行
-    # 通常用 warp shuffle 实现
-    
-    tl.store(out_ptr + offsets, x, mask=mask)
+| | Reduce | Scan |
+|---|---|---|
+| 依赖结构 | Fan-in（收拢），只有一个出口 | Fan-out（扇出），每个输出都要所有前驱 |
+| Work complexity | O(n) | O(n log n) — Blelloch 赢在延迟，不赢在总 work |
+| Cross-warp | partial 写到 smem 合并成标量 | partial 写到 smem 后**还要写回去**（每个 thread 都要输出） |
+| Cross-block | 不需要（标量结果直接用） | **必须两个 kernel**（block sum 通过 global memory 传递） |
+
+---
+
+### 2.2 第一层：Blelloch 算法 — 8 步交互演示
+
+> 数据: `[3, 1, 7, 0, 4, 1, 6, 3]`（8 个元素，`BLOCK_SIZE=8`）
+
+Blelloch scan 分两个阶段，输出 **exclusive scan**:
+- **Up-Sweep（3 步）**: 从叶子向根构建部分和树
+- **Down-Sweep（4 步）**: 从根向叶子分发前缀和
+
+下面是二叉树视角。树中每个节点 `[i-j]` 存储它覆盖区间的部分和（up-sweep 时从下往上填，down-sweep 时从上往下修正）。
+
+```
+                    ┌──────[0-7]──────┐              ← Level 3 (root)
+                    │    total sum    │
+           ┌────[0-3]────┐     ┌────[4-7]────┐       ← Level 2
+           │  sum(0..3)  │     │  sum(4..7)  │
+      ┌─[0-1]──┐   ┌─[2-3]──┐ ┌─[4-5]──┐   ┌─[6-7]──┐  ← Level 1
+      │sum(0,1)│   │sum(2,3)│ │sum(4,5)│   │sum(6,7)│
+      │  │     │   │  │     │ │  │     │   │  │     │
+idx:  0  1     2   3  4     5 6  7     8   9 10    11   (概念树节点编号)
+val:  3  1     7   0  4     1 6  3     ←  ←  ←  ←  ←   原始数据 (叶子)
 ```
 
-### 2.3 Scan 的 Triton 限制
+---
 
-Scan 在 Triton 中比较难实现的原因:
-1. 有数据依赖（每个元素依赖前一个元素）
-2. Triton 的 block-level API 不直接支持这种依赖
-3. 通常需要用 warp shuffle 或 shared memory 实现
+<details>
+<summary><b>Step 1: 初始状态</b> — 叶子节点 = 原始数据</summary>
 
-替代方案:
-- 如果 scan 长度不大（<1024），用 PyTorch torch.cumsum 即可
-- 如果需要大 scan，考虑分段 scan（decompose into independent blocks）
+只有叶子有值。内部节点尚未计算。
+
+```
+                    ┌──────[0-7]──────┐
+                    │       ?         │
+           ┌────[0-3]────┐     ┌────[4-7]────┐
+           │     ?       │     │     ?       │
+      ┌─[0-1]──┐   ┌─[2-3]──┐ ┌─[4-5]──┐   ┌─[6-7]──┐
+      │   ?    │   │   ?    │ │   ?    │   │   ?    │
+      │  │     │   │  │     │ │  │     │   │  │     │
+      3  1     7   0  4     1  6  3     ←  ←  ←  ←  ←
+```
+
+数组: `[3, 1, 7, 0, 4, 1, 6, 3]`
+
+</details>
+
+<details>
+<summary><b>Step 2: Up-Sweep offset=1</b> — 相邻两两合并 → 填满 Level 1</summary>
+
+线程 `i` 满足 `(i+1) % 2 == 0` 的，把 `x[i-1]` 加到 `x[i]` 上。
+
+```
+      ┌─[0-1]──┐   ┌─[2-3]──┐ ┌─[4-5]──┐   ┌─[6-7]──┐
+      │   4    │   │   7    │ │   5    │   │   9    │    ← Level 1 填满
+      │ ↗│     │   │ ↗│     │ │ ↗│     │   │ ↗│     │
+      3  1     7   0  4     1  6  3
+       (1+3)     (0+7)     (1+4)     (3+6)
+```
+
+- `x[1] += x[0]` → 1+3=**4**
+- `x[3] += x[2]` → 0+7=**7**
+- `x[5] += x[4]` → 1+4=**5**
+- `x[7] += x[6]` → 3+6=**9**
+
+数组: `[3, 4, 7, 7, 4, 5, 6, 9]`（加粗为本次变化）
+
+</details>
+
+<details>
+<summary><b>Step 3: Up-Sweep offset=2</b> — 跨两对合并 → 填满 Level 2</summary>
+
+线程 `i` 满足 `(i+1) % 4 == 0` 的，把 `x[i-2]` 加到 `x[i]` 上。
+
+```
+           ┌────[0-3]────┐     ┌────[4-7]────┐
+           │     11      │     │     14      │         ← Level 2 填满
+      ┌─[0-1]──┐   ┌─[2-3]──┐ ┌─[4-5]──┐   ┌─[6-7]──┐
+      │   4    │   │   7 ↗  │ │   5    │   │   9 ↗  │
+      3  1     7   0  4     1  6  3
+                  (7+4)            (9+5)
+```
+
+- `x[3] += x[1]` → 7+4=**11**
+- `x[7] += x[5]` → 9+5=**14**
+
+数组: `[3, 4, 7, 11, 4, 5, 6, 14]`
+
+</details>
+
+<details>
+<summary><b>Step 4: Up-Sweep offset=4</b> — 跨两组合并 → 填满 Root</summary>
+
+线程 `i` 满足 `(i+1) % 8 == 0` 的，把 `x[i-4]` 加到 `x[i]` 上。
+
+```
+                    ┌──────[0-7]──────┐
+                    │       25        │                    ← Root 填满
+           ┌────[0-3]────┐     ┌────[4-7]────┐
+           │     11      │     │     14 ↗    │
+      ┌─[0-1]──┐   ┌─[2-3]──┐ ┌─[4-5]──┐   ┌─[6-7]──┐
+      │   4    │   │   7    │ │   5    │   │   9    │
+      3  1     7   0  4     1  6  3
+                                     (14+11)
+```
+
+- `x[7] += x[3]` → 14+11=**25**（全部元素总和）
+
+数组: `[3, 4, 7, 11, 4, 5, 6, 25]`
+
+</details>
+
+---
+
+**Up-Sweep 完成。** `x[7] = 25` = 全部元素总和。树中每个内部节点 `[i-j]` 都存在其覆盖区间内**某个位置**: 节点 `[0-3]→x[3]=11`, 节点 `[0-7]→x[7]=25`。
+
+---
+
+<details>
+<summary><b>Step 5: 清零 Root</b> — 准备 Down-Sweep</summary>
+
+Down-Sweep 之前先把 `x[7]` 清零。这个 0 将向下传播。
+
+```
+                    ┌──────[0-7]──────┐
+                    │       0         │                    ← Root 清零
+           ┌────[0-3]────┐     ┌────[4-7]────┐
+           │     11      │     │     14      │
+      ┌─[0-1]──┐   ┌─[2-3]──┐ ┌─[4-5]──┐   ┌─[6-7]──┐
+      │   4    │   │   7    │ │   5    │   │   9    │
+      3  1     7   0  4     1  6  3
+```
+
+- `x[7] = 0`
+
+数组: `[3, 4, 7, 11, 4, 5, 6, 0]`
+
+</details>
+
+<details>
+<summary><b>Step 6: Down-Sweep offset=4</b> — Root 向 Level 2 分发</summary>
+
+线程 `i` 满足 `(i+1) % 8 == 0` 的，swap 并 propagate:
+- `tmp = x[i-4]`, `x[i-4] = x[i]`, `x[i] += tmp`
+
+```
+                    ┌──────[0-7]──────┐
+                    │       0         │
+           ┌────[0-3]────┐     ┌────[4-7]────┐
+           │  0  │       │     │  11  │       │           ← [0-3]清零, [4-7]=11
+      ┌─[0-1]──┐   ┌─[2-3]──┐ ┌─[4-5]──┐   ┌─[6-7]──┐
+      │   4    │   │   7    │ │   5    │   │   9    │
+      3  1     7   0  4     1  6  3
+      ↑                   ↑
+  x[3]=0              x[7]=11
+```
+
+- `tmp = x[3] = 11` → `x[3] = x[7] = 0` → `x[7] = 0 + 11 = 11`
+
+含义: `x[7]` 现在是 `[0-3]` 区间和(11) + 0，即 exc_scan 中 index 7 的前缀和。
+
+数组: `[3, 4, 7, 0, 4, 5, 6, 11]`
+
+</details>
+
+<details>
+<summary><b>Step 7: Down-Sweep offset=2</b> — Level 2 向 Level 1 分发</summary>
+
+线程 `i` 满足 `(i+1) % 4 == 0` 的，swap 并 propagate。
+
+```
+           ┌────[0-3]────┐     ┌────[4-7]────┐
+           │  0  │       │     │  11  │       │
+      ┌─[0-1]──┐   ┌─[2-3]──┐ ┌─[4-5]──┐   ┌─[6-7]──┐
+      │ 0 │    │   │ 4 │    │ │11 │    │   │16 │    │    ← Level 1 更新
+      3  1     7   0  4     1  6  3
+      ↑       ↑      ↑       ↑
+    x[1]=0  x[3]=4  x[5]=11 x[7]=16
+```
+
+- Pair 1: `tmp=x[1]=4` → `x[1]=x[3]=0` → `x[3]=0+4=4`
+- Pair 2: `tmp=x[5]=5` → `x[5]=x[7]=11` → `x[7]=11+5=16`
+
+数组: `[3, 0, 7, 4, 4, 11, 6, 16]`
+
+</details>
+
+<details>
+<summary><b>Step 8: Down-Sweep offset=1</b> — Level 1 向叶子分发 → 完成！</summary>
+
+线程 `i` 满足 `(i+1) % 2 == 0` 的，swap 并 propagate。
+
+```
+      ┌─[0-1]──┐   ┌─[2-3]──┐ ┌─[4-5]──┐   ┌─[6-7]──┐
+      │ 0 │ 3  │   │ 4 │11  │ │11 │15  │   │16 │22  │    ← 叶子得到最终值
+      0  3     4   11 11 15  16 22                         ← exclusive scan 结果
+```
+
+- `x[0]↔x[1]`: `x[0]=0, x[1]=3`
+- `x[2]↔x[3]`: `x[2]=4, x[3]=11`
+- `x[4]↔x[5]`: `x[4]=11, x[5]=15`
+- `x[6]↔x[7]`: `x[6]=16, x[7]=22`
+
+**最终结果（exclusive scan）: `[0, 3, 4, 11, 11, 15, 16, 22]`**
+
+</details>
+
+---
+
+**验证:** 对原始输入 `[3,1,7,0,4,1,6,3]`
+
+| i | exc_scan[i] | 含义 | 验证 |
+|---|---|---|---|
+| 0 | 0 | 前 0 个元素的和 | 0 ✓ |
+| 1 | 3 | 前 1 个元素的和 | 3 ✓ |
+| 2 | 4 | 前 2 个元素的和 | 3+1=4 ✓ |
+| 3 | 11 | 前 3 个元素的和 | 3+1+7=11 ✓ |
+| 4 | 11 | 前 4 个元素的和 | 3+1+7+0=11 ✓ |
+| 5 | 15 | 前 5 个元素的和 | 3+1+7+0+4=15 ✓ |
+| 6 | 16 | 前 6 个元素的和 | 3+1+7+0+4+1=16 ✓ |
+| 7 | 22 | 前 7 个元素的和 | 3+1+7+0+4+1+6=22 ✓ |
+
+---
+
+### 2.3 第二层：Triton 编译器怎么实现 Scan
+
+Triton 提供 `tl.associative_scan`，一行代码搞定:
+
+```python
+x = tl.associative_scan(x, 0, lambda a, b: a + b)
+```
+
+编译器把它展开成两层:
+
+**Layer 1 — Warp 内 (register-level, 最快):**
+
+使用 `__shfl_up_sync`（PTX warp shuffle），stride = 1, 2, 4, 8, 16，共 **5 轮**:
+
+```
+Round 0 (stride=1):  thread i 从 thread i-1 拿值, 相加 → 相邻合并
+Round 1 (stride=2):  thread i 从 thread i-2 拿值, 相加 → 跨2合并
+Round 2 (stride=4):  thread i 从 thread i-4 拿值, 相加 → 跨4合并
+Round 3 (stride=8):  thread i 从 thread i-8 拿值, 相加 → 跨8合并
+Round 4 (stride=16): thread i 从 thread i-16 拿值, 相加 → 跨16合并
+```
+
+5 轮后每个 warp 得到 32 个元素的 **inclusive scan**。`__shfl_up_sync` 延迟 ~1 cycle（比 shared memory 快 ~20×），这是 warp 级 scan 极快的原因。
+
+**Layer 2 — Warp 间 (shared memory):**
+
+Warps 之间不能 shuffle，必须通过 shared memory 传递数据:
+
+1. 各 warp 最后一个 thread 把 **warp_sum** 写入 smem
+2. `__syncthreads` 后，thread 0 对 smem 里的 warp_sums 做一次 warp 级 scan
+3. 把 smem 里**前置 warp 的累加值**加回到本 warp 每个元素上
+
+这和 Reduce 的关键区别: **Reduce 写完 smem 就结束了（只需要标量结果）; Scan 写完 smem 后还必须写回去，因为每个 thread 都要自己的输出。**
+
+---
+
+### 2.4 第三层：为什么你手写的代码是错的
+
+原始代码:
+
+```python
+for offset in [1, 2, 4, 8, 16, 32, 64, 128, 256]:
+    prev = tl.where(tl.arange(0, BLOCK_SIZE) >= offset,
+                    x, tl.zeros_like(x))
+    x = x + prev  # ← 这行是错的
+```
+
+**根本错误: `prev` 并没有做 shift。**
+
+`tl.where(tl.arange(0, BLOCK_SIZE) >= offset, x, tl.zeros_like(x))` 的意思是:
+- thread `i` 如果 `i >= offset` → 取 `x[i]`
+- thread `i` 如果 `i < offset` → 取 `0`
+
+所以 thread `i` 读到的永远是**自己的** `x[i]`，不是 `x[i - offset]`。最终效果:
+
+```python
+x = x + prev  # x[i] + x[i] (if i >= offset else x[i] + 0)
+              # = 2*x[i] (if i >= offset) else x[i]
+              # 而不是 x[i] + x[i - offset] !
+```
+
+这不是 bug 的变种 —— 它做了一件**完全不同的事**。Blelloch scan 要求 thread `i` 能读到 thread `i-offset` 的值，即**跨线程数据移动**。`tl.where` 只做 mask 选择，不具备跨线程能力。
+
+**Triton 没有 `tl.shift` 原语。** 做跨线程数据移动只有三条路:
+
+| 方式 | 适用场景 | 延迟 |
+|------|---------|------|
+| `__shfl_up_sync` (warp shuffle) | warp 内 (≤32 threads) | ~1 cycle |
+| `tl.load` 配合偏移地址 | 任意范围 | ~20 cycles (smem) |
+| `tl.associative_scan` | 任意 scan 操作 | 编译器自动选上面两种 |
+
+**正确做法:**
+
+```python
+# 一行搞定 — 编译器自动展开 warp shuffle + smem
+x = tl.associative_scan(x, 0, lambda a, b: a + b)
+```
+
+---
+
+### 2.5 跨 Block Scan 的挑战
+
+上面讲的都是 **block 内** scan（`N ≤ BLOCK_SIZE`）。跨 block 的 scan（`N > BLOCK_SIZE`）更麻烦:
+
+相邻 block 之间无法共享寄存器或 smem，必须通过 **global memory** 传递 block 前缀和。通常需要**两个 kernel**:
+
+```
+Kernel 1: 各 block 独立做 block 内 scan，同时输出 block_sum
+          block 0 → scan([a₁..aₙ]) = [p₁..pₙ], sum = S₀
+          block 1 → scan([b₁..bₙ]) = [q₁..qₙ], sum = S₁
+          ...
+
+Kernel 2: 对 block_sums [S₀, S₁, ...] 做 scan → [P₀, P₁, ...]
+          然后修正各 block 内的值:
+          block 1 的每个元素 += P₀
+          block 2 的每个元素 += P₁
+          ...
+```
+
+这是你代码里 `for block_start in range(0, N_COLS, BLOCK_SIZE)` 这种单 kernel 循环做不到的事——它只能做 block 内 scan，跨 block 的前缀依赖链无法在一个 kernel 内解决。
+
+**替代方案:** 如果 scan 长度不大（<1024），直接用 PyTorch `torch.cumsum`；如果必须 GPU 上做大 scan，用 CUB 的 `DeviceScan`（Triton 目前无内置跨 block scan 支持）。
 
 ---
 
@@ -316,9 +607,10 @@ tl.atomic_xchg(ptr, val)    # 原子交换
 │   → 考虑: split-K 如果 K 很大
 
 ├── Scan: output[i] = f(output[i-1], input[i])
-│   → 有数据依赖，难以并行
-│   → 对小 scan (<1024): 用 PyTorch
-│   → 对大 scan: 分段 scan 或考虑用 warp shuffle
+│   → 有数据依赖，但 Blelloch 算法做到 O(log n) 深度
+│   → Block 内: 用 tl.associative_scan (编译器自动展开 warp shuffle + smem)
+│   → 跨 Block: 必须双 kernel（block sum 通过 global memory 传递）
+│   → 是 Reduce 的"镜像问题" — fan-out vs fan-in
 
 ├── Gather/Scatter:
 │   → 通常 memory-bound, 合并访问难
