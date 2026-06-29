@@ -1,13 +1,12 @@
-# 20 — TMA 与异步数据搬运
+# 16 — TMA 与异步数据搬运
 
 > **目标**: 理解 GPU 异步数据搬运的演进（synchronous → `cp.async` → TMA），掌握 Triton 的 TMA-ready 编程模式，了解 H100 上极限性能的硬件基础。
-> **前置**: 笔记 00（GPU 执行模型）、笔记 02（内存层级）、笔记 19（Block Pointer API）、笔记 10（Hopper 架构）
+> **前置**: 笔记 00（GPU 执行模型）、笔记 02（内存层级）、笔记 15（Block Pointer API）、笔记 14（Hopper 架构）
 
 ---
 
 ## 0. 从一个问题开始: 为什么 H100 上你的 Triton GEMM 跑不过 cuBLAS？
 
-```
 A100 (Ampere) 上:
   Triton tiled GEMM ≈ cuBLAS 的 95-98%
   → "Triton 接近手写 CUDA"
@@ -20,7 +19,7 @@ H100 (Hopper) 上:
   H100 引入了专用的硬件数据搬运单元 TMA
   cuBLAS/CUTLASS 3.x 用 TMA + warp specialization 榨干了 HBM 带宽
   Triton 3.x 对 TMA 的支持仍在实验阶段
-```
+
 
 ---
 
@@ -84,7 +83,6 @@ def matmul_kernel(...):
 
 ### 1.3 第三代: TMA（Hopper H100 / SM90）
 
-```
 TMA（Tensor Memory Accelerator）:
   H100 引入的专用硬件数据搬运单元——独立的固定功能硬件
 
@@ -103,7 +101,7 @@ TMA（Tensor Memory Accelerator）:
   类比:
     cp.async = 你在图书馆一边找书一边看书
     TMA      = 有个专门的图书管理员帮你搬书，你只管看
-```
+
 
 ---
 
@@ -194,7 +192,6 @@ Triton make_block_ptr → TMA descriptor:
 
 ### 3.1 支持层次
 
-```
 Triton 3.6 (当前版本):
   ✅ tl.make_block_ptr — TMA-ready 的数据描述
   ✅ num_stages > 1 → cp.async — 自动软件流水线
@@ -208,7 +205,7 @@ Triton 未来版本 (3.7+):
   🔮 tl.make_tma_store — 显式 TMA async store
   🔮 tl.create_tma_descriptor — 创建 TMA descriptor
   🔮 可能的 warp specialization 支持
-```
+
 
 ### 3.2 TMA 映射的前置条件
 
@@ -256,7 +253,6 @@ python phase3_production/01_matmul_block_ptr.py
 
 ### 4.1 为什么单靠 TMA 不够？
 
-```
 只用 TMA 做数据搬运，warp 同时做计算:
   Producer warp = Consumer warp = 同一个 warp
   → 数据搬运虽然不占 ALU，但仍占 issue slot
@@ -268,7 +264,7 @@ TMA + Warp Specialization:
     Consumer warps: 专门用 wgmma 做计算
   → 完全解耦：搬运和计算同时进行，互相不干扰
   → 每个 warp 的寄存器压力降低 → 更高的 occupancy
-```
+
 
 ### 4.2 Warp Specialization 的流水线
 
@@ -286,7 +282,6 @@ TMA + Warp Specialization:
 
 ### 4.3 Triton 的限制
 
-```
 Triton 的 block-level 编程模型:
   一个 kernel 中所有线程执行相同的代码（SPMD）
   → 无法在 Triton 代码中区分 "producer warp" vs "consumer warp"
@@ -301,7 +296,7 @@ Triton 的 block-level 编程模型:
     - CUDA CUTLASS 做参考: 手动编写 warp-specialized kernel
     - Triton 可能引入 "warp group" 编程抽象
     - cuTile Python 在 Python 层面支持 warp specialization
-```
+
 
 ---
 
@@ -394,7 +389,6 @@ os.environ['TRITON_ENABLE_TMA'] = '1'
 
 ### 6.1 TMA 能提升什么、不能提升什么
 
-```
 TMA 能提升的:
   ✅ 地址计算开销: 从 ~10% 寄存器降到 ~0%
   ✅ 边界检查: 硬件直接处理
@@ -412,7 +406,7 @@ TMA 不能提升的（如果瓶颈不在这里）:
   Small GEMM (M,N ≤ 512): memory-bound → TMA 提升 10-15%
   Flash Attention: mixed → TMA 提升 5-10%
   Elementwise: memory-bound → TMA 作用有限（没有 tile reuse）
-```
+
 
 ### 6.2 H100 上的完整性能栈
 
@@ -448,7 +442,6 @@ TMA 不能提升的（如果瓶颈不在这里）:
 
 ### 7.2 未来路线
 
-```
 当前 (Triton 3.6):
   用 block_ptr + boundary_check + num_stages
   → cp.async (Ampere+) + 可能 TMA (Hopper)
@@ -464,7 +457,7 @@ TMA 不能提升的（如果瓶颈不在这里）:
 远期 (Triton + cuTile?):
   cuTile Python 的 warp group 抽象
   → 完全发挥 H100/B100 的硬件能力
-```
+
 
 ---
 
@@ -474,5 +467,5 @@ TMA 不能提升的（如果瓶颈不在这里）:
 - [CUTLASS 3.x TMA + Warp Specialization](https://github.com/NVIDIA/cutlass/blob/main/media/docs/efficient_gemm.md)
 - [Triton GitHub — TMA tracking issue](https://github.com/triton-lang/triton/issues?q=is%3Aissue+TMA)
 - `phase3_production/01_matmul_block_ptr.py` — TMA-ready GEMM 示例
-- 笔记 `19_block_pointer_api.md` — Block Pointer 完整指南
-- 笔记 `10_hopper_architecture.md` — Hopper 架构总览
+- 笔记 `15_block_pointer_api.md` — Block Pointer 完整指南
+- 笔记 `14_hopper_architecture.md` — Hopper 架构总览

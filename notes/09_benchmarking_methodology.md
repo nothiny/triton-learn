@@ -1,30 +1,28 @@
-# 05 — Benchmarking Methodology: 如何正确测量 GPU Kernel 性能
+# 09 — Benchmarking Methodology: 如何正确测量 GPU Kernel 性能
 
 > ⚠️ GPU kernel 的 benchmark 比 CPU 复杂得多，有很多容易踩的坑。这篇笔记整理了正确做法和常见误判。
 
 ## TL;DR Cheat Sheet
 
-```
-新手最常见的 5 个错误:
-
-❌ 用 time.time() 计时
-✅ 用 torch.cuda.Event
-
-❌ 不 warmup 直接测
-✅ 至少 10-25 次 warmup 后再测
-
-❌ 只测一个尺寸就下结论
-✅ 扫描多个规模，看趋势
-
-❌ 不看数值正确性就 bench
-✅ 先 assert max_diff < 1e-3，再 bench
-
-❌ 只报 TFLOPS，不报 % of ceiling
-✅ 两个都报：TFLOPS + "% of ceiling" 或 "% of cuBLAS"
-
-正确的 benchmark 流程:
-  make check-gpu → warmup → 测正确性 → CUDA Event 计时 → 报告 median + % ceiling
-```
+    新手最常见的 5 个错误:
+    
+    ❌ 用 time.time() 计时
+    ✅ 用 torch.cuda.Event
+    
+    ❌ 不 warmup 直接测
+    ✅ 至少 10-25 次 warmup 后再测
+    
+    ❌ 只测一个尺寸就下结论
+    ✅ 扫描多个规模，看趋势
+    
+    ❌ 不看数值正确性就 bench
+    ✅ 先 assert max_diff < 1e-3，再 bench
+    
+    ❌ 只报 TFLOPS，不报 % of ceiling
+    ✅ 两个都报：TFLOPS + "% of ceiling" 或 "% of cuBLAS"
+    
+    正确的 benchmark 流程:
+      make check-gpu → warmup → 测正确性 → CUDA Event 计时 → 报告 median + % ceiling
 
 ---
 
@@ -257,14 +255,12 @@ assert max_diff < 0.01, f"Wrong! max_diff={max_diff}"
 
 ## 9. 推荐的 Benchmark 流程
 
-```
-1. make check-gpu          → 确认 GPU 型号和峰值参数
-2. 跑 correctness test     → 确保 kernel 数值正确
-3. torch.profiler          → 看 GPU kernel 的时间线，确认没有异常
-4. ncu --set full          → 看 roofline、occupancy、memory/compute throughput
-5. 扫描多个规模             → 画 TFLOPS vs size 的折线图
-6. 报告 % of ceiling + % of cuBLAS（或 % of flash-attn）
-```
+    1. make check-gpu          → 确认 GPU 型号和峰值参数
+    2. 跑 correctness test     → 确保 kernel 数值正确
+    3. torch.profiler          → 看 GPU kernel 的时间线，确认没有异常
+    4. ncu --set full          → 看 roofline、occupancy、memory/compute throughput
+    5. 扫描多个规模             → 画 TFLOPS vs size 的折线图
+    6. 报告 % of ceiling + % of cuBLAS（或 % of flash-attn）
 
 ---
 
@@ -286,19 +282,17 @@ assert max_diff < 0.01, f"Wrong! max_diff={max_diff}"
 
 ### 如何判断 kernel 瓶颈（3 步法）
 
-```
-1. 看 "GPU Speed of Light" 的 Compute Throughput
-   → Compute > 60%: kernel 在努力计算，compute bound
-   → Compute < 30%: SM 计算单元空闲，继续看 Memory
-
-2. 看 "GPU Speed of Light" 的 Memory Throughput
-   → Memory > 60%: kernel 内存受限，memory bound
-   → Memory < 30%: 既不用计算也不等内存 → 可能是 launch overhead 或同步问题
-
-3. 看 Achieved Occupancy
-   → occupancy < 30%: 检查寄存器使用量，可能 num_warps 太大
-   → occupancy > 60%: 资源利用正常，问题在别处
-```
+    1. 看 "GPU Speed of Light" 的 Compute Throughput
+       → Compute > 60%: kernel 在努力计算，compute bound
+       → Compute < 30%: SM 计算单元空闲，继续看 Memory
+    
+    2. 看 "GPU Speed of Light" 的 Memory Throughput
+       → Memory > 60%: kernel 内存受限，memory bound
+       → Memory < 30%: 既不用计算也不等内存 → 可能是 launch overhead 或同步问题
+    
+    3. 看 Achieved Occupancy
+       → occupancy < 30%: 检查寄存器使用量，可能 num_warps 太大
+       → occupancy > 60%: 资源利用正常，问题在别处
 
 ### 快速诊断命令
 

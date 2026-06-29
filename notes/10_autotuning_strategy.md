@@ -1,4 +1,4 @@
-# 16 — Autotuning 策略指南：从"随便试"到"科学搜索"
+# 10 — Autotuning 策略指南：从"随便试"到"科学搜索"
 
 > Autotune 不是"多加点 config 就更好"。搜索空间太大 → 编译时间长、cache 爆炸；太小 → 找不到最优。这篇讲如何设计高效的 autotune 策略。
 
@@ -8,33 +8,32 @@
 
 ### 1.1 一个完整的 autotune 周期
 
-```
+```python
 @triton.autotune(configs=[...], key=['M', 'N', 'K'])
 @triton.jit
 def my_kernel(...):
     ...
+```
 
 第一次调用 (M=1024, N=1024, K=1024):
   1. 检查 cache: ~/.triton/cache/ 中是否有 M=1024,N=1024,K=1024 的结果？
      → 没有 → 需要 autotune
-  
+
   2. 对每个 config 生成编译版本（JIT compile）
      → 20 个 configs × ~200ms 编译时间 = ~4 秒
-  
+
   3. 对每个 config 在 GPU 上实际运行 1-2 次
      → 20 个 configs × ~5ms = ~100ms
-  
+
   4. 选最快的 config → 缓存到 ~/.triton/cache/
-  
+
   5. 用最优 config 运行真正的 kernel
 
 后续调用 (M=1024, N=1024, K=1024):
   1. 检查 cache → hit → 直接用缓存的 config → 0 开销！
-```
 
 ### 1.2 Autotune 的开销
 
-```
 首次运行开销:
   JIT 编译: 每个 config ~100-500ms (取决于 kernel 复杂度)
   Benchmark: 每个 config ~2-10ms
@@ -48,8 +47,7 @@ Cache 存储:
 建议:
   - 开发时用少量 config (4-6 个) 快速迭代
   - 最终优化时用更多 config (15-30 个)
-  - 定期清理 cache: rm -rf ~/.triton/cache/
-```
+  - 定期清理 cache: `rm -rf ~/.triton/cache/`
 
 ---
 
@@ -82,23 +80,30 @@ configs = [
 
 ### 2.2 硬件约束速查
 
-```
 Block 大小约束 (Ampere/Hopper):
-  - BLOCK_M % 16 == 0 (MMA M dimension)
-  - BLOCK_N % 8 == 0 (MMA N dimension)
-  - BLOCK_K % 16 == 0 (MMA K dimension)
-  - BLOCK_M × BLOCK_N × thread_size ≤ max threads per block (2048 in Triton)
-  - BLOCK_M × BLOCK_K × dtype_size × num_stages ≤ shared memory (164-228 KB)
-  
+
+$$
+\begin{aligned}
+\text{BLOCK\_M} &\bmod 16 = 0 \quad (\text{MMA M dimension}) \\
+\text{BLOCK\_N} &\bmod 8 = 0 \quad (\text{MMA N dimension}) \\
+\text{BLOCK\_K} &\bmod 16 = 0 \quad (\text{MMA K dimension}) \\
+\text{BLOCK\_M} \times \text{BLOCK\_N} \times \text{thread\_size} &\leq 2048 \quad (\text{max threads per block in Triton}) \\
+\text{BLOCK\_M} \times \text{BLOCK\_K} \times \text{dtype\_size} \times \text{num\_stages} &\leq 164\!-\!228 \text{ KB} \quad (\text{shared memory})
+\end{aligned}
+$$
+
 num_warps 约束:
-  - num_warps 必须是 2 的幂: 4, 8, 16, 32
-  - num_warps × 32 × registers_per_thread ≤ 65536 (register file)
-  - 一般 4-8 就够，超过 8 很少有用
+- num_warps 必须是 2 的幂: 4, 8, 16, 32
+- $$
+  \text{num\_warps} \times 32 \times \text{registers\_per\_thread} \leq 65536 \quad (\text{register file})
+  $$
+- 一般 4-8 就够，超过 8 很少有用
 
 num_stages 约束:
-  - num_stages × tile_size × dtype_size ≤ shared memory
-  - 通常 2-3 最优，很少有理由用 4+
-```
+- $$
+  \text{num\_stages} \times \text{tile\_size} \times \text{dtype\_size} \leq \text{shared memory}
+  $$
+- 通常 2-3 最优，很少有理由用 4+
 
 ### 2.3 Pruning 策略
 
@@ -293,7 +298,6 @@ for m in [64, 128, 256]:
 
 ## 6. Autotune 的局限性
 
-```
 1. 不跨 GPU 型号
    A100 上 autotune 出来的 config 不一定在 H100 上最优
    每个 GPU 型号需要独立的 autotune
@@ -309,13 +313,11 @@ for m in [64, 128, 256]:
 4. 编译时间长
    30+ configs 的第一次运行可能需要 30 秒到 1 分钟编译时间
    对于开发阶段，这是很高的 overhead
-```
 
 ---
 
 ## 7. 决策速查
 
-```
 问自己 3 个问题:
 
 1. 我的 kernel 是 memory-bound 还是 compute-bound?
@@ -330,7 +332,6 @@ for m in [64, 128, 256]:
    → 开发: 4 个 configs → 秒级反馈
    → 优化: 20 个 configs → 分钟级编译
    → 极致: 50+ configs + 手动微调 → 小时级
-```
 
 ---
 

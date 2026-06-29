@@ -1,4 +1,4 @@
-# 24 — MLIR 框架深度：从概念到 Triton 的 Dialect 设计
+# 23 — MLIR 框架深度：从概念到 Triton 的 Dialect 设计
 
 > 理解 MLIR 不是一种语言，而是构建编译器的"乐高积木"。Triton 的 `tt` 和 `ttg` dialect 就是搭在这个框架上的两块关键积木。
 > 配合 `phase4_compiler/22-27` 教程系列。
@@ -61,7 +61,7 @@ tensor<256xf32,              // 带 layout encoding（TTGIR）
 
 **类型驱动 lowering**：Triton 最精妙的设计——TTIR→TTGIR 不是换 op，而是在 TYPE 上加 attribute。
 
-```
+```mlir
 TTIR:   tensor<256xf32>          ← 只知道是 256 个 f32
 TTGIR:  tensor<256xf32,          ← 知道了线程如何分配
                 #blocked<{
@@ -112,7 +112,7 @@ Triton 编译器涉及的 dialect：
 
 ### 1.5 Region & Block（结构）
 
-```
+```mlir
 module {                          ← 最外层容器
   tt.func public @kernel(...) {   ← 函数 = 一个 kernel 入口（一个 Region）
     ^bb0(%arg0: i32):             ← Block 标签（可省略）
@@ -246,11 +246,9 @@ module attributes {
 
 ### 4.2 Pattern Rewriting（最核心的 Pass 模式）
 
-```
 定义: pattern → replacement
 引擎: 在 IR 中匹配 pattern，替换为 replacement
 迭代: 反复应用直到没有新匹配（fixed-point）
-```
 
 **例：TritonCombineOps**
 
@@ -280,26 +278,24 @@ Replacement：
 
 ### 4.3 Triton Pass Pipeline（完整顺序）
 
-```
-1. TTIR Optimization
-   TritonInliner → TritonCombineOps → CanonicalizeOps → LoopUnroll
+1. **TTIR Optimization**
+   `TritonInliner` → `TritonCombineOps` → `CanonicalizeOps` → `LoopUnroll`
 
-2. TTIR → TTGIR Conversion ★★★
-   ConvertTritonToTritonGPU（分配 layout encoding）
+2. **TTIR → TTGIR Conversion** (核心)
+   `ConvertTritonToTritonGPU`（分配 layout encoding）
 
-3. TTGIR Optimization
-   Coalesce → RemoveLayoutConversions → ★ AccelerateMatmul →
-   CombineTensorSelect → OptimizeDotOperands
+3. **TTGIR Optimization**
+   `Coalesce` → `RemoveLayoutConversions` → `AccelerateMatmul` →
+   `CombineTensorSelect` → `OptimizeDotOperands`
 
-4. Software Pipelining
-   ★ Pipeline（展开循环 + cp.async） → Prefetch
+4. **Software Pipelining**
+   `Pipeline`（展开循环 + cp.async） → `Prefetch`
 
-5. TTGIR → LLVM
-   ConvertTritonGPUToLLVM（展开 layout，生成 NVVM intrinsic）
+5. **TTGIR → LLVM**
+   `ConvertTritonGPUToLLVM`（展开 layout，生成 NVVM intrinsic）
 
-6. LLVM → PTX（LLVM 内置，Triton 不控制）
+6. **LLVM → PTX**（LLVM 内置，Triton 不控制）
    LLVM Opt Pipeline → NVPTX CodeGen → Register Allocation → PTX
-```
 
 ---
 

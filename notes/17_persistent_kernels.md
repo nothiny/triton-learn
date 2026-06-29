@@ -1,4 +1,4 @@
-# 21 — Persistent Kernel 与 Stream-K
+# 17 — Persistent Kernel 与 Stream-K
 
 > **目标**: 理解两种生产级 work dispatch 模式——Persistent Kernel（固定 grid + atomic 调度）和 Stream-K（K 维动态分解），掌握何时使用每种模式及其 tradeoff。
 > **前置**: 笔记 00（GPU 执行模型）、笔记 01（Triton 编程模型）、`phase2_compute/02_matmul_tiled.py`
@@ -22,7 +22,6 @@ matmul_kernel[grid](a, b, c, ...)
 
 ### 0.2 Grid Utilization 问题
 
-```
 大矩阵 (M=N=4096, BM=BN=128):
   num_ctas = (4096/128) × (4096/128) = 32 × 32 = 1024
   H100 有 132 SM → 每个 SM 平均 ~7.8 个 CTA → 利用率好
@@ -30,17 +29,16 @@ matmul_kernel[grid](a, b, c, ...)
 小矩阵 (M=N=256, BM=BN=128):
   num_ctas = (256/128) × (256/128) = 2 × 2 = 4
   H100 有 132 SM → 只有 4 个 SM 有工作 → 96% SM 空闲！
-```
+
 
 ### 0.3 静态 K 维划分的负载不均
 
-```
 标准 GEMM: 每个 CTA 做全部 K → 没问题（所有 CTA 工作量相同）
 Split-K: 把 K 静态分成 S 份 → 如果 K%S≠0，最后一份少半块
   更严重的问题: 大矩阵 → K=8192, SPLIT_K=8 → 每份 1024
                 中矩阵 → K=512,  SPLIT_K=8 → 每份 64
   如果 K 太小: CTA 数远超 K 的工作量 → 浪费
-```
+
 
 ---
 
@@ -48,7 +46,6 @@ Split-K: 把 K 静态分成 S 份 → 如果 K%S≠0，最后一份少半块
 
 ### 1.1 核心思想
 
-```
 标准 launch:
   Grid = cdiv(M,BM) × cdiv(N,BN)  → 一个小 CTA 一出生就固定了 (pid_m, pid_n)
   做完一个 tile 就退出
@@ -60,7 +57,7 @@ Persistent kernel:
 类比:
   标准 launch = 临时工: 来干一个活就走
   Persistent kernel = 全职员工: 常驻在岗位上，不断接新任务
-```
+
 
 ### 1.2 实现
 
@@ -176,7 +173,6 @@ for _ in range(total_mn_tiles):     # 上限循环
 
 ### 1.4 Persistent Kernel 的性能特征
 
-```
 ✅ 优势:
   - 消除 launch overhead（小矩阵场景收益最大）
   - 100% SM utilization（即使 tiles < num_sms）
@@ -192,7 +188,7 @@ for _ in range(total_mn_tiles):     # 上限循环
   - 矩阵较小（tiles < num_sms × 2）
   - 需要 fuse 多个 kernel 到一个 persistent loop 中
   - 序列长度可变的处理（varlen attention）
-```
+
 
 ---
 
@@ -200,7 +196,6 @@ for _ in range(total_mn_tiles):     # 上限循环
 
 ### 2.1 Split-K 的问题
 
-```
 Split-K: 把 K 静态分为 SPLIT_K 份
   Grid = (cdiv(M,BM), cdiv(N,BN), SPLIT_K)
   每个 CTA 固定分配到特定的 K 范围
@@ -217,11 +212,10 @@ Split-K: 把 K 静态分为 SPLIT_K 份
     × M=1 → 不需要 split MN
     × K 很大 → 需要 split K
     → 但静态 split K 做了不必要的 partial reduction
-```
+
 
 ### 2.2 Stream-K 的核心思想
 
-```
 Stream-K: K tiles 是 "流" 入的
 
   不固定 CTA 的 K 范围 → 用 atomic counter 动态分配
@@ -238,7 +232,7 @@ Stream-K: K tiles 是 "流" 入的
 
     Stream-K: grid 有 1 维 (num_ctas,)
               每个 CTA 动态获取 K group → 遍历所有 (M,N) tiles
-```
+
 
 ### 2.3 实现
 
@@ -338,7 +332,6 @@ def stream_k_gemm_kernel(
 
 ### 3.1 为什么融合？
 
-```
 Persistent kernel 解决: launch overhead, grid utilization
 Stream-K 解决: K 维负载均衡
 
@@ -346,7 +339,7 @@ Stream-K 解决: K 维负载均衡
   Grid = num_sms（persistent 的固定 grid）
   每个 CTA 先在 K 维做 stream-K 式的工作获取，再处理 MN tiles
   → 同时获得: 零 launch overhead + K 维负载均衡
-```
+
 
 ### 3.2 实现概要
 
@@ -400,7 +393,6 @@ tl.atomic_xchg(ptr, val, mask=mask)  # 原子交换
 
 ### 4.2 性能考虑
 
-```
 atomic_add 的开销:
   - 同一 warp 内无竞争: ~1 cycle（warp-level atomic）
   - SM 内跨 warp 竞争: ~20-30 cycles（L1 cache atomic）
@@ -416,7 +408,7 @@ Stream-K 的 partial reduction:
   - 竞争程度取决于 tiles_per_k_group 和 grid size
   - tiles_per_k_group 越大 → 每个 CTA 的 K 范围越大 → 竞争越少
   - 但越大也意味着负载均衡越粗
-```
+
 
 ---
 
@@ -447,7 +439,6 @@ Stream-K 的 partial reduction:
 
 ## 6. 总结
 
-```
 Persistent Kernel:
   核心: 固定 grid + atomic work dispatch
   优点: 消除 launch overhead，100% SM utilization
@@ -468,7 +459,7 @@ Stream-K:
   2. SM 利用率低或单 token 推理 → 换 persistent
   3. K 维负载不均衡 → 换 Stream-K
   4. 两者都需要 → 融合 persistent + Stream-K
-```
+
 
 ---
 

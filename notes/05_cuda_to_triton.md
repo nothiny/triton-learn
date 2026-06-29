@@ -1,4 +1,4 @@
-# 11 — CUDA → Triton 迁移指南
+# 05 — CUDA → Triton 迁移指南
 
 > 如果你之前写 CUDA，或者是看 CUDA 教程学 GPU 的，这篇帮你快速把知识迁移到 Triton。
 
@@ -6,15 +6,13 @@
 
 ## 1. 心智模型转换
 
-```
-CUDA:
-  "我有 N 个线程。每个线程应该处理哪个数据？怎么避免 bank conflict？
-   怎么让 32 个线程的内存访问合并？"
-
-Triton:
-  "我有一个 block。block 应该处理多少数据？编译器帮我管线程。
-   我应该用什么 BLOCK_SIZE？多少 num_warps？"
-```
+    CUDA:
+      "我有 N 个线程。每个线程应该处理哪个数据？怎么避免 bank conflict？
+       怎么让 32 个线程的内存访问合并？"
+    
+    Triton:
+      "我有一个 block。block 应该处理多少数据？编译器帮我管线程。
+       我应该用什么 BLOCK_SIZE？多少 num_warps？"
 
 **关键洞察**: CUDA 是自底向上的（thread → warp → block），Triton 是自顶向下的（block → 编译器 → thread）。
 
@@ -147,42 +145,36 @@ def matmul_kernel(a_ptr, b_ptr, c_ptr, M, N, K,
 
 ### 4.1 Shared Memory Staging — 完全自动化
 
-```
-CUDA: ~20 行
-  - 声明 shared memory
-  - 协作加载（thread 偏移计算）
-  - __syncthreads 同步
-  - 可能的 bank conflict padding
-
-Triton: 1 行
-  x = tl.load(ptr + offsets, mask=mask)
-  // 编译器自动处理: coalescing, staging, sync, bank conflict avoidance
-```
+    CUDA: ~20 行
+      - 声明 shared memory
+      - 协作加载（thread 偏移计算）
+      - __syncthreads 同步
+      - 可能的 bank conflict padding
+    
+    Triton: 1 行
+      x = tl.load(ptr + offsets, mask=mask)
+      // 编译器自动处理: coalescing, staging, sync, bank conflict avoidance
 
 ### 4.2 Coalescing — 编译器分析
 
-```
-CUDA: 需要手动确保相邻线程访问相邻地址
-  - 选择 row-major / column-major
-  - 可能重新调整 thread index 的映射
-  - 测试不同 access pattern
-
-Triton: 编译器通过 layout order 自动确保 coalescing
-  - order=[0,1] → row-major access
-  - 编译器分析内存访问模式，生成 coalesced load/store
-```
+    CUDA: 需要手动确保相邻线程访问相邻地址
+      - 选择 row-major / column-major
+      - 可能重新调整 thread index 的映射
+      - 测试不同 access pattern
+    
+    Triton: 编译器通过 layout order 自动确保 coalescing
+      - order=[0,1] → row-major access
+      - 编译器分析内存访问模式，生成 coalesced load/store
 
 ### 4.3 Block Size Tuning — Autotuner
 
-```
-CUDA: 手动试
-  - 改 BLOCK_SIZE → 重新编译 → 跑 benchmark → 记录 → 换下一个值
-  - 不同 GPU 需要不同的值
-
-Triton: Autotuner
-  @triton.autotune(configs=[...], key=['N'])
-  - 列出候选 → 第一次运行自动测试 → 缓存最优 → 后续直接用
-```
+    CUDA: 手动试
+      - 改 BLOCK_SIZE → 重新编译 → 跑 benchmark → 记录 → 换下一个值
+      - 不同 GPU 需要不同的值
+    
+    Triton: Autotuner
+      @triton.autotune(configs=[...], key=['N'])
+      - 列出候选 → 第一次运行自动测试 → 缓存最优 → 后续直接用
 
 ---
 
@@ -190,78 +182,68 @@ Triton: Autotuner
 
 ### 5.1 精细的线程控制
 
-```
-CUDA 能做到但 Triton 做不到:
-  - 指定"线程 0 做这个，线程 1 做那个"的不对称操作
-  - Warp shuffle 显式操作（__shfl_sync）
-  - 手动 warp specialization
-  - 精确的 shared memory bank 控制
-
-Triton 的设计哲学: 这些细节不应该由程序员管。
-但对于极致性能优化，这些是不可或缺的。
-```
+    CUDA 能做到但 Triton 做不到:
+      - 指定"线程 0 做这个，线程 1 做那个"的不对称操作
+      - Warp shuffle 显式操作（__shfl_sync）
+      - 手动 warp specialization
+      - 精确的 shared memory bank 控制
+    
+    Triton 的设计哲学: 这些细节不应该由程序员管。
+    但对于极致性能优化，这些是不可或缺的。
 
 ### 5.2 Debug
 
-```
-CUDA: cuda-gdb, NVIDIA Nsight, printf
-Triton: TRITON_INTERPRET（解释执行）, tl.device_print, IR dump
-→ Triton 的调试工具链还不够成熟（详见笔记 06）
-```
+    CUDA: cuda-gdb, NVIDIA Nsight, printf
+    Triton: TRITON_INTERPRET（解释执行）, tl.device_print, IR dump
+    → Triton 的调试工具链还不够成熟（详见笔记 08）
 
 ### 5.3 特殊的硬件特性
 
-```
-Triton 不能直接使用:
-  - TMA (H100 硬件拷贝)
-  - wgmma (H100 warp group MMA)
-  - Thread Block Cluster (H100 block 协作)
-  - 2:4 sparsity 硬件加速
-
-这些是为什么 cuBLAS 在 H100 上比 Triton 快 15-30%。
-```
+    Triton 不能直接使用:
+      - TMA (H100 硬件拷贝)
+      - wgmma (H100 warp group MMA)
+      - Thread Block Cluster (H100 block 协作)
+      - 2:4 sparsity 硬件加速
+    
+    这些是为什么 cuBLAS 在 H100 上比 Triton 快 15-30%。
 
 ---
 
 ## 6. 迁移策略：从 CUDA 到 Triton 的实战步骤
 
-```
-1. 找到你要迁移的 CUDA kernel
-2. 识别 kernel 的 grid 结构（1D? 2D? 3D?）
-3. 画出数据流图（不涉及线程分配）
-4. 用 Triton 重写:
-   - grid = block 的分配（和 CUDA 一致）
-   - offsets = tl.arange 代替 threadIdx 计算
-   - tl.load/tl.store 代替手写 shared memory
-   - tl.dot 代替手写 inner loop
-5. 加 autotune
-6. 对比性能（预期: 70-90% of cuBLAS）
-
-常见陷阱:
-  - Stride 顺序: CUDA 的行/列容易混淆
-  - dtype: Triton 中 fp16 输入自动被 tl.load 读取
-  - 指针: Triton 的 ptr + offset 和 CUDA 指针运算相同
-```
+    1. 找到你要迁移的 CUDA kernel
+    2. 识别 kernel 的 grid 结构（1D? 2D? 3D?）
+    3. 画出数据流图（不涉及线程分配）
+    4. 用 Triton 重写:
+       - grid = block 的分配（和 CUDA 一致）
+       - offsets = tl.arange 代替 threadIdx 计算
+       - tl.load/tl.store 代替手写 shared memory
+       - tl.dot 代替手写 inner loop
+    5. 加 autotune
+    6. 对比性能（预期: 70-90% of cuBLAS）
+    
+    常见陷阱:
+      - Stride 顺序: CUDA 的行/列容易混淆
+      - dtype: Triton 中 fp16 输入自动被 tl.load 读取
+      - 指针: Triton 的 ptr + offset 和 CUDA 指针运算相同
 
 ---
 
 ## 7. 什么时候应该留在 CUDA？
 
-```
-以下场景建议继续用 CUDA/CUTILE 而不是迁移到 Triton:
-
-1. 你的 kernel 需要 95%+ peak TFLOPS（H100 上）
-   → Triton 没有 TMA/wgmma/warp specialization
-
-2. 极其精细的线程控制
-   → 如 warp-level 的 producer/consumer pipeline
-
-3. 稀疏计算
-   → Triton 的 sparsity 支持不成熟
-
-4. 已有大量 CUDA 代码，迁移成本 > 收益
-   → 但可以新增的 fusion kernel 用 Triton 写
-```
+    以下场景建议继续用 CUDA/CUTILE 而不是迁移到 Triton:
+    
+    1. 你的 kernel 需要 95%+ peak TFLOPS（H100 上）
+       → Triton 没有 TMA/wgmma/warp specialization
+    
+    2. 极其精细的线程控制
+       → 如 warp-level 的 producer/consumer pipeline
+    
+    3. 稀疏计算
+       → Triton 的 sparsity 支持不成熟
+    
+    4. 已有大量 CUDA 代码，迁移成本 > 收益
+       → 但可以新增的 fusion kernel 用 Triton 写
 
 ---
 

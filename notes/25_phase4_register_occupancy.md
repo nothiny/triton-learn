@@ -1,4 +1,4 @@
-# 26 — 寄存器分配与 Occupancy 优化
+# 25 — 寄存器分配与 Occupancy 优化
 
 > GPU SM 的三资源约束模型、spill 检测、num_warps/BLOCK_SIZE/num_stages 的权衡——Triton 性能调优的核心知识。
 > 配合 `phase4_compiler/10_register_pressure.py`。
@@ -30,47 +30,49 @@
 
 ### 1.2 你的 Kernel 每 CTA（block）消耗的资源
 
-```
-每 CTA 寄存器 = num_warps × 32 threads/warp × registers_per_thread
-每 CTA Shared Memory = 所有 .shared 声明的总和
-每 CTA Warps = num_warps
-```
+$$
+\begin{aligned}
+\text{每 CTA 寄存器} &= \text{num\_warps} \times 32 \times \text{registers\_per\_thread} \\
+\text{每 CTA Shared Memory} &= \text{所有 .shared 声明的总和} \\
+\text{每 CTA Warps} &= \text{num\_warps}
+\end{aligned}
+$$
 
 ### 1.3 Occupancy 的计算
 
-```
-Occupancy = 同时驻留在 SM 上的 CTA 数
-
-受限于:
-  max_ctas_by_regs   = floor(65536 / regs_per_cta)
-  max_ctas_by_shared = floor(228KB / shared_per_cta)
-  max_ctas_by_warps  = floor(64 / num_warps)
-  max_ctas_by_blocks = 32
-
-  occupancy = min(max_ctas_by_regs, max_ctas_by_shared,
-                  max_ctas_by_warps, max_ctas_by_blocks)
-```
+$$
+\begin{aligned}
+\text{Occupancy} &= \text{同时驻留在 SM 上的 CTA 数} \\[4pt]
+\text{受限于:} \\[2pt]
+\text{max\_ctas\_by\_regs} &= \left\lfloor \frac{65536}{\text{regs\_per\_cta}} \right\rfloor \\
+\text{max\_ctas\_by\_shared} &= \left\lfloor \frac{228\ \text{KB}}{\text{shared\_per\_cta}} \right\rfloor \\
+\text{max\_ctas\_by\_warps} &= \left\lfloor \frac{64}{\text{num\_warps}} \right\rfloor \\
+\text{max\_ctas\_by\_blocks} &= 32 \\[4pt]
+\text{occupancy} &= \min(\text{max\_ctas\_by\_regs},\ \text{max\_ctas\_by\_shared}, \\
+&\qquad\; \text{max\_ctas\_by\_warps},\ \text{max\_ctas\_by\_blocks})
+\end{aligned}
+$$
 
 **举例**：
 
-```
-num_warps=4, regs_per_thread=128
-  → regs_per_cta = 4×32×128 = 16384
-  → max_ctas_by_regs = 65536/16384 = 4 个 CTA 可同时驻留
-  → max_ctas_by_warps = 64/4 = 16
-  → occupancy = min(4, 16, 32, ...) = 4 ✓
-
-num_warps=8, regs_per_thread=128
-  → regs_per_cta = 8×32×128 = 32768
-  → max_ctas_by_regs = 65536/32768 = 2 个 CTA
-  → max_ctas_by_warps = 64/8 = 8
-  → occupancy = min(2, 8, 32, ...) = 2
-
-num_warps=16, regs_per_thread=128
-  → regs_per_cta = 16×32×128 = 65536
-  → max_ctas_by_regs = 65536/65536 = 1 个 CTA
-  → occupancy = 1  ← 寄存器成了瓶颈！
-```
+$$
+\begin{aligned}
+\text{num\_warps}=4,\ \text{regs\_per\_thread}=128
+&\;\rightarrow\; \text{regs\_per\_cta} = 4 \times 32 \times 128 = 16384 \\
+&\;\rightarrow\; \text{max\_ctas\_by\_regs} = \lfloor 65536 / 16384 \rfloor = 4 \\
+&\;\rightarrow\; \text{max\_ctas\_by\_warps} = \lfloor 64 / 4 \rfloor = 16 \\
+&\;\rightarrow\; \text{occupancy} = \min(4, 16, 32, \dots) = 4 \quad \checkmark \\[4pt]
+\text{num\_warps}=8,\ \text{regs\_per\_thread}=128
+&\;\rightarrow\; \text{regs\_per\_cta} = 8 \times 32 \times 128 = 32768 \\
+&\;\rightarrow\; \text{max\_ctas\_by\_regs} = \lfloor 65536 / 32768 \rfloor = 2 \\
+&\;\rightarrow\; \text{max\_ctas\_by\_warps} = \lfloor 64 / 8 \rfloor = 8 \\
+&\;\rightarrow\; \text{occupancy} = \min(2, 8, 32, \dots) = 2 \\[4pt]
+\text{num\_warps}=16,\ \text{regs\_per\_thread}=128
+&\;\rightarrow\; \text{regs\_per\_cta} = 16 \times 32 \times 128 = 65536 \\
+&\;\rightarrow\; \text{max\_ctas\_by\_regs} = \lfloor 65536 / 65536 \rfloor = 1 \\
+&\;\rightarrow\; \text{occupancy} = 1 \quad \leftarrow \text{寄存器成了瓶颈！}
+\end{aligned}
+$$
 
 **增加 num_warps 不一定提高 occupancy**——注册器用光时反而降低。
 
@@ -123,12 +125,10 @@ print(f"Estimated registers: ~{stats.register_estimate}")
 
 ### 3.1 什么是 Spilling？
 
-当 LLVM（或 ptxas）发现物理寄存器不够时，将一些值"溢出"到**local memory**（线程私有的，存在 L1 cache 中）：
+当 LLVM（或 ptxas）发现物理寄存器不够时，将一些值"溢出"到 **local memory**（线程私有的，存在 L1 cache 中）：
 
-```
 寄存器 → local memory（STL/store local）
 需要时 → 从 local memory 加载回来（LDL/load local）
-```
 
 local memory 的延迟 ~20-100 cycles（取决于 L1 hit），远高于寄存器的 0 cycles。
 
@@ -149,14 +149,12 @@ cuobjdump -sass *.cubin | grep "STL\|LDL"
 
 ### 3.3 Spill 的连锁反应
 
-```
 每线程需要的寄存器太多
   → LLVM spill 一些到 local memory
   → PTX 中出现 st.local/ld.local
   → 即使 PTX 中声明了 255 个虚拟寄存器，ptxas 也可能 spill 更多
   → 额外的 load/store 指令
   → 2-5x 性能下降
-```
 
 ---
 
@@ -177,27 +175,22 @@ cuobjdump -sass *.cubin | grep "STL\|LDL"
 | 3-4 | 3-4× tile | 高 | 可能显著 |
 | 5+ | 5+× tile | 很高 | 很可能降低 |
 
-```
-如果 shared_per_cta > 228KB:
+如果 shared_per_cta > 228KB：
   → 无法在 H100 上启动 kernel（编译失败或运行时错误）
-如果 shared_per_cta 接近 228KB:
+如果 shared_per_cta 接近 228KB：
   → occupancy = 1（每个 SM 只能驻留 1 个 CTA）
   → GPU 利用率低
-```
 
 ---
 
 ## 5. Triton 参数 ↔ 资源消耗映射
 
-```
-参数                影响              资源
-─────────────────────────────────────────────
-num_warps ↑         每 CTA warp 多      寄存器需求 ↑（总池固定，每 warp 分得少）
-                                        占用更多 warp 槽位
-BLOCK_SIZE ↑        sizePerThread ↑    寄存器需求 ↑（每线程管更多元素）
-num_stages ↑        buffer 多           Shared Memory ↑↑
-dtype=fp32          fp32 代替 fp16     寄存器宽度 ↑↑（翻倍）
-```
+| 参数 | 影响 | 资源 |
+|------|------|------|
+| `num_warps ↑` | 每 CTA warp 多 | 寄存器需求 ↑（总池固定，每 warp 分得少），占用更多 warp 槽位 |
+| `BLOCK_SIZE ↑` | `sizePerThread ↑` | 寄存器需求 ↑（每线程管更多元素） |
+| `num_stages ↑` | buffer 多 | Shared Memory ↑↑ |
+| `dtype=fp32` | fp32 代替 fp16 | 寄存器宽度 ↑↑（翻倍） |
 
 **最优配置是三维空间中最靠近"刚好不溢出"的点**——autotune 做的就是在这个空间里搜。
 
@@ -257,20 +250,18 @@ grep "st.local\|ld.local" ~/.triton/cache/*.ptx && echo "SPILL DETECTED!"
 
 ## 8. 总结
 
-```
-GPU SM 的三资源约束:
+GPU SM 的三资源约束：
 
   寄存器 (65536/SM)  ─┐
   Shared Mem (228KB)  ─┼── 三者最小值 → Occupancy
   Warp Slots (64)     ─┘
 
-Triton 的三个控制参数:
+Triton 的三个控制参数：
   num_warps    → 寄存器 + Warp Slots
   BLOCK_SIZE   → 寄存器（sizePerThread）
   num_stages   → Shared Memory
 
-调优策略:
-  寄存器 spill? → 减小 BLOCK_SIZE / 用 fp16 / 减少 num_warps
-  Occupancy 低? → 减少 num_warps / 减少 num_stages
-  一切都好但仍慢? → 检查是否是 memory-bound 而非 compute-bound
-```
+调优策略：
+  寄存器 spill？ → 减小 BLOCK_SIZE / 用 fp16 / 减少 num_warps
+  Occupancy 低？ → 减少 num_warps / 减少 num_stages
+  一切都好但仍慢？ → 检查是否是 memory-bound 而非 compute-bound

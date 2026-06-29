@@ -1,4 +1,4 @@
-# 17 — Triton 反向传播：写 Backward Pass 和 Autograd 集成
+# 07 — Triton 反向传播：写 Backward Pass 和 Autograd 集成
 
 > 写 forward kernel 只完成了一半。真正训练需要 backward pass。这篇讲如何写 Triton kernel 的反向传播，以及如何和 PyTorch autograd 集成。
 
@@ -8,16 +8,19 @@
 
 ### 1.1 Forward 和 Backward 的关系
 
-```
-Forward:  给定输入 x, w，计算输出 y
-Backward: 给定 ∂L/∂y（损失对输出的梯度），计算 ∂L/∂x 和 ∂L/∂w
+**Forward:** 给定输入 $x, w$，计算输出 $y$
 
-链式法则:
-  ∂L/∂x = ∂L/∂y · ∂y/∂x
-  ∂L/∂w = ∂L/∂y · ∂y/∂w
+**Backward:** 给定 $\partial L / \partial y$（损失对输出的梯度），计算 $\partial L / \partial x$ 和 $\partial L / \partial w$
 
-你不需要知道 L 是什么 — 只需要知道 ∂L/∂y（由下游传过来）
-```
+**链式法则:**
+
+$$
+\frac{\partial L}{\partial x} = \frac{\partial L}{\partial y} \cdot \frac{\partial y}{\partial x}, \qquad
+\frac{\partial L}{\partial w} = \frac{\partial L}{\partial y} \cdot \frac{\partial y}{\partial w}
+$$
+
+你不需要知道 $L$ 是什么 — 只需要知道 $\partial L / \partial y$（由下游传过来）
+
 
 ### 1.2 PyTorch 的 `torch.autograd.Function`
 
@@ -254,23 +257,14 @@ def test_my_function():
 
 ### 4.2 常见的 gradcheck 失败原因
 
-```
-1. 忘记 bias 的梯度:
-   forward: y = x @ w.T + bias
-   backward 只返回了 grad_x, grad_w，忘了 grad_bias
+1. **忘记 bias 的梯度:** forward: $y = x @ w^T + \text{bias}$，backward 只返回了 grad_x, grad_w，忘了 grad_bias
 
-2. ReLU/Dropout 的 mask 不一致:
-   forward 用的 mask 和 backward 用的 mask 必须完全相同
-   → 使用 ctx.save_for_backward 保存 mask
+2. **ReLU/Dropout 的 mask 不一致:** forward 用的 mask 和 backward 用的 mask 必须完全相同 → 使用 `ctx.save_for_backward` 保存 mask
 
-3. 数值稳定性:
-   softmax 在 float64 下行，但在 float32 下行为不同
-   → 检查 gradcheck 的 atol
+3. **数值稳定性:** softmax 在 float64 下行，但在 float32 下行为不同 → 检查 gradcheck 的 atol
 
-4. Stride 错误:
-   forward 中 stride 是 (N, 1)，backward 中 T 之后的 stride 变了
-   → 仔细检查 .T 之后的 tensor 的 stride
-```
+4. **Stride 错误:** forward 中 stride 是 (N, 1)，backward 中 T 之后的 stride 变了 → 仔细检查 `.T` 之后的 tensor 的 stride
+
 
 ---
 
@@ -332,44 +326,53 @@ class FusedLinearReLU(torch.autograd.Function):
 
 ### 6.1 Backward 的 FLOPs
 
-```
 Backward 的计算量 ≈ Forward 的 2× (对于 GEMM 占主导的 kernel)
 
 以 Linear 为例:
-  Forward: y = x @ w.T         (2×M×N×K FLOPs)
-  Backward: grad_x = grad_y @ w (2×M×N×K FLOPs)
-            grad_w = grad_y.T @ x (2×M×N×K FLOPs)
-  总共: Backward ≈ 2× Forward
+
+$$
+\begin{aligned}
+\text{Forward: } y &= x @ w^T \quad (2 \times M \times N \times K \text{ FLOPs}) \\
+\text{Backward: } \text{grad}_x &= \text{grad}_y @ w \quad (2 \times M \times N \times K \text{ FLOPs}) \\
+\text{grad}_w &= \text{grad}_y^T @ x \quad (2 \times M \times N \times K \text{ FLOPs})
+\end{aligned}
+$$
+
+总共: Backward ≈ 2× Forward
 
 以 Softmax 为例:
-  Forward: O(N) FLOPs
-  Backward: O(N²) FLOPs (需要完整的 attention matrix)
-  → 这也是 Flash Attention 需要专门 backward 算法的原因
-```
+
+- Forward: $O(N)$ FLOPs
+- Backward: $O(N^2)$ FLOPs (需要完整的 attention matrix)
+
+→ 这也是 Flash Attention 需要专门 backward 算法的原因
+
 
 ### 6.2 内存：Save for Backward
 
-```
-ctx.save_for_backward 保存的内容影响显存使用:
+`ctx.save_for_backward` 保存的内容影响显存使用:
 
 以 Linear + ReLU 为例:
-  - x: [M, K] fp16 = M×K×2 bytes
-  - w: [N, K] fp16 = N×K×2 bytes (如果在 backward 中还需要的話)
-  - mask: [M, N] bool = M×N bytes
 
-  对于 M=4096, N=4096, K=1024:
-    x: 4096×1024×2 = 8.4 MB
-    w: 4096×1024×2 = 8.4 MB
-    mask: 4096×4096 = 16.8 MB
-    总共: ~33.6 MB per layer
+- x: [M, K] fp16 = $M \times K \times 2$ bytes
+- w: [N, K] fp16 = $N \times K \times 2$ bytes (如果在 backward 中还需要的話)
+- mask: [M, N] bool = $M \times N$ bytes
 
-  对于 32 层: 33.6 × 32 = 1.1 GB — 不小但通常够
+对于 $M=4096$, $N=4096$, $K=1024$:
 
-  Flash Attention 的 memory saving:
-    标准 attention 需要保存 attention matrix (N²)
-    Flash Attention 只保存 softmax statistics (O(N))
-    → 显著减少 save_for_backward 的内存
-```
+- x: $4096 \times 1024 \times 2 = 8.4$ MB
+- w: $4096 \times 1024 \times 2 = 8.4$ MB
+- mask: $4096 \times 4096 = 16.8$ MB
+- 总共: ~33.6 MB per layer
+
+对于 32 层: $33.6 \times 32 = 1.1$ GB — 不小但通常够
+
+**Flash Attention 的 memory saving:**
+
+- 标准 attention 需要保存 attention matrix ($N^2$)
+- Flash Attention 只保存 softmax statistics ($O(N)$)
+- → 显著减少 save_for_backward 的内存
+
 
 ---
 

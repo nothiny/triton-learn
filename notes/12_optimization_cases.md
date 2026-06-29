@@ -44,26 +44,22 @@ ncu:
 
 ### 优化步骤
 
-```
-Step 1 — Start:       18.5 TFLOPS ( 5.9%)  ← naive
-Step 2 — +Shared Mem: 89.3 TFLOPS (28.6%)  ← 5× improvement!
-Step 3 — +Autotune:  134.2 TFLOPS (43.0%)  ← 1.5×, 搜索最优 tile size
-Step 4 — +num_stages:152.2 TFLOPS (48.8%)  ← 1.13×, double buffering
-Step 5 — +GROUP_M:   168.5 TFLOPS (54.0%)  ← 1.11×, L2 cache 优化
-Step 6 — Fine-tune:  187.2 TFLOPS (60.0%)  ← warp count, block order 微调
+- Step 1 — Start: 18.5 TFLOPS (5.9%) — naive
+- Step 2 — +Shared Mem: 89.3 TFLOPS (28.6%) — 5× improvement!
+- Step 3 — +Autotune: 134.2 TFLOPS (43.0%) — 1.5×, 搜索最优 tile size
+- Step 4 — +num_stages: 152.2 TFLOPS (48.8%) — 1.13×, double buffering
+- Step 5 — +GROUP_M: 168.5 TFLOPS (54.0%) — 1.11×, L2 cache 优化
+- Step 6 — Fine-tune: 187.2 TFLOPS (60.0%) — warp count, block order 微调
 
 最终: 187 TFLOPS, 60% H100 peak, 75% cuBLAS
-```
 
 ### 关键教训
 
-```
-1. Shared memory 是最重要的第一步（5× 提升）
-2. Autotune 能带来 ~1.5× 提升（对复杂 kernel 可能更多）
+1. Shared memory 是最重要的第一步 (5× 提升)
+2. Autotune 能带来 ~1.5× 提升 (对复杂 kernel 可能更多)
 3. 后面的优化越来越"辛苦": 每次 5-10%
 4. 接近 cuBLAS 的 85% 以后，每一 % 都需要更多努力
 5. 64%+ peak 对于 Triton 来说已经是优秀水平
-```
 
 ---
 
@@ -87,14 +83,12 @@ Step 6 — Fine-tune:  187.2 TFLOPS (60.0%)  ← warp count, block order 微调
 
 ### 诊断
 
-```
-ncu:
-  Memory Throughput: 6%  ← 极低！
-  Compute Throughput: 1%
+**ncu 分析：**
+- Memory Throughput: 6% — 极低！
+- Compute Throughput: 1%
 
-问题: 3 个 kernel，每个都是 memory-bound，中间的 max/sum 不需要写回 HBM
+问题: 3 个 kernel, 每个都是 memory-bound, 中间的 max/sum 不需要写回 HBM
 → fused kernel: 在寄存器中完成 max → exp → sum → normalize
-```
 
 ### 优化
 
@@ -113,11 +107,9 @@ ncu:
 
 ### 关键教训
 
-```
 1. Operator fusion 对 memory-bound kernel 收益最大
 2. 每减少一次 HBM round-trip ≈ 减少 1× 延迟
 3. 自问: "这个中间结果真的需要写回显存吗？"
-```
 
 ---
 
@@ -148,11 +140,9 @@ ncu:
 
 ### 关键教训
 
-```
-1. 统计算法（Welford）可以实现 1-pass mean+variance
+1. 统计算法 (Welford) 可以实现 1-pass mean+variance
 2. 但归一化本身仍然需要第 2 次读取
-3. 终极方案: 融合 LayerNorm + 后续 Linear 层（kernel fusion）
-```
+3. 终极方案: 融合 LayerNorm + 后续 Linear 层 (kernel fusion)
 
 ---
 
@@ -160,40 +150,36 @@ ncu:
 
 ### 问题
 
-```
-Standard Attention (N=4096, d=64, fp16):
-  S 矩阵: 4096² × 2B = 33.6 MB
-  P 矩阵: 4096² × 2B = 33.6 MB
-  总 HBM: ~67 MB per attention head
-
-  32 heads: 67 × 32 = 2.1 GB per layer
-  对 32 层 transformer: 67 GB ← 甚至超出 H100 的 80GB 容量
-```
+$$
+\begin{aligned}
+\text{Standard Attention}\ (N &= 4096,\ d = 64,\ \text{fp16}): \\
+\text{S matrix: } 4096^2 \times 2\,\text{B} &= 33.6\,\text{MB} \\
+\text{P matrix: } 4096^2 \times 2\,\text{B} &= 33.6\,\text{MB} \\
+\text{Total HBM: } &\sim 67\,\text{MB per attention head} \\
+32\,\text{heads: } 67 \times 32 &= 2.1\,\text{GB per layer} \\
+32\,\text{层 transformer: } 67\,\text{GB} &\leftarrow \text{超出 H100 的 80GB 容量}
+\end{aligned}
+$$
 
 ### 解决方案
 
-```
 Flash Attention (04_flash_attention_v1.py):
-  分块计算 attention，每个 tile 不写回 HBM
-  S/P tile: 128×128 × 2B = 32 KB (在 SRAM 中)
-  
-  HBM: ~1 MB per head (只有 QKV read + O write)
-  节省: ~67× per head
-```
+分块计算 attention, 每个 tile 不写回 HBM
+S/P tile: 128×128 × 2B = 32 KB (在 SRAM 中)
+HBM: ~1 MB per head (只有 QKV read + O write)
+节省: ~67× per head
 
 ### 性能对比
 
-```
 Standard Attention (N=4096):
-  Time: 45.3 ms
-  Memory: 2.1 GB
+- Time: 45.3 ms
+- Memory: 2.1 GB
 
 Flash Attention v1 (Triton, N=4096):
-  Time: 2.1 ms
-  Memory: 33 MB
+- Time: 2.1 ms
+- Memory: 33 MB
 
 加速: 21.6× faster, 64× less memory
-```
 
 ---
 
@@ -214,43 +200,32 @@ Flash Attention v1 (Triton, N=4096):
 
 ### 诊断
 
-```
-ncu 分析:
-  Memory Throughput: 28%
-  Compute Throughput: 2%
-  
+**ncu 分析：**
+- Memory Throughput: 28%
+- Compute Throughput: 2%
+
 问题: 仍然是 memory-bound。2 次 HBM 遍历。
 每个元素: 读 2 次 + 写 1 次 = 3 次 HBM 访问
-```
 
 ### 优化步骤
 
-```
-Step 1 — 基础实现 (2-pass):
-  71.2 GB/s, 3.6% peak
+Step 1 — 基础实现 (2-pass): 71.2 GB/s, 3.6% peak
 
 Step 2 — 融合 rms 计算和归一化到 1-pass:
-  将 rms 的中间结果保存在寄存器中，不再写回 HBM
-  但 normalization 仍需要第 2 次遍历
-  
-  结果: 105.8 GB/s, 5.3% peak (+47%)
+将 rms 的中间结果保存在寄存器中，不再写回 HBM, 但 normalization 仍需要第 2 次遍历
+结果: 105.8 GB/s, 5.3% peak (+47%)
 
-Step 3 — 与后续操作融合（如果有 Linear 层）:
-  将 RMSNorm + Linear 融合为一个 kernel
-  → 完全消除 HBM round-trip
-  → 这是 Liger Kernel 的关键优化
-  
-  Liger RMSNorm: ~380 GB/s, 19% peak
-  (vs 我们的 2-pass: 71 GB/s)
-```
+Step 3 — 与后续操作融合 (如果有 Linear 层):
+将 RMSNorm + Linear 融合为一个 kernel
+→ 完全消除 HBM round-trip
+→ 这是 Liger Kernel 的关键优化
+Liger RMSNorm: ~380 GB/s, 19% peak (vs 我们的 2-pass: 71 GB/s)
 
 ### 关键教训
 
-```
-1. RMSNorm 比 LayerNorm 快约 1.3×（少算 mean）
+1. RMSNorm 比 LayerNorm 快约 1.3× (少算 mean)
 2. 真正的优化在于 fusion: RMSNorm + Linear 融合 → 1 次 HBM 遍历
 3. 单 kernel RMSNorm 的最大瓶颈是 HBM 带宽 — 无法突破
-```
 
 ---
 
@@ -258,21 +233,27 @@ Step 3 — 与后续操作融合（如果有 Linear 层）:
 
 ### 概念
 
-```
-SwiGLU(x) = SiLU(gate) ⊙ up
-
-其中:
-  gate = x @ W_gate.T    (Linear)
-  up   = x @ W_up.T      (Linear)
-  SiLU(z) = z * sigmoid(z)  (elementwise)
+$$
+\begin{aligned}
+\text{SwiGLU}(x) &= \text{SiLU}(\text{gate}) \odot \text{up} \\
+\text{其中:} \\
+\text{gate} &= x \cdot W_{\text{gate}}^T \quad (\text{Linear}) \\
+\text{up}   &= x \cdot W_{\text{up}}^T \quad (\text{Linear}) \\
+\text{SiLU}(z) &= z \cdot \sigma(z) \quad (\text{elementwise})
+\end{aligned}
+$$
 
 标准实现: 3 个 kernel
-  1. Linear: gate = x @ W_gate.T
-  2. Linear: up = x @ W_up.T
-  3. SiLU + multiply: result = (gate * sigmoid(gate)) * up
 
-问题: gate 和 up 写回 HBM → 再从 HBM 读回做 elementwise
-```
+$$
+\begin{aligned}
+&1.\ \text{Linear: } \text{gate} = x \cdot W_{\text{gate}}^T \\
+&2.\ \text{Linear: } \text{up} = x \cdot W_{\text{up}}^T \\
+&3.\ \text{SiLU + multiply: } \text{result} = (\text{gate} \cdot \sigma(\text{gate})) \cdot \text{up}
+\end{aligned}
+$$
+
+问题: gate 和 up 写回 HBM, 再从 HBM 读回做 elementwise
 
 ### 优化
 
@@ -339,34 +320,28 @@ def fused_swiglu_kernel(
 
 ### 性能对比
 
-```
 标准实现 (3 kernels):
-  Time: 1.89 ms
-  HBM traffic: ~50 MB
+- Time: 1.89 ms
+- HBM traffic: ~50 MB
 
 Fused SwiGLU:
-  Time: 0.95 ms
-  HBM traffic: ~25 MB
+- Time: 0.95 ms
+- HBM traffic: ~25 MB
 
-加速: 2.0×（主要来自减少了 HBM round-trip）
-```
+加速: 2.0× (主要来自减少了 HBM round-trip)
 
 ### Liger Kernel 对比
 
-```
 Liger 的 SwiGLU:
-  - 用 chunked 策略: 把大矩阵切分成多个 chunk
-  - 每个 chunk 独立做 GEMM + SiLU + multiply
-  - 进一步减少显存峰值
-  
-  Liger SwiGLU 比我们的 fused 版本快 ~1.2×
-  （更好的 tiling 和 register management）
-```
+- 用 chunked 策略: 把大矩阵切分成多个 chunk
+- 每个 chunk 独立做 GEMM + SiLU + multiply
+- 进一步减少显存峰值
+
+Liger SwiGLU 比我们的 fused 版本快 ~1.2× (更好的 tiling 和 register management)
 
 ### 关键教训
 
-```
-1. 对于激活函数（SiLU, GELU, ReLU）:
+1. 对于激活函数 (SiLU, GELU, ReLU):
    → 总是在 GEMM 后面紧接着做 elementwise op
    → 节省一次 HBM round-trip
 
@@ -377,7 +352,6 @@ Liger 的 SwiGLU:
 3. 内存带宽是扩展瓶颈:
    → fused kernel 的收益来自减少 HBM 流量
    → 对 memory-bound 的操作特别有效
-```
 
 ---
 
@@ -416,36 +390,27 @@ Liger 的 SwiGLU:
 
 ### 优化的收益递减
 
-```
-优化第一轮 (最明显的):
-  Shared memory + tiling: 3-5× 提升
+优化第一轮 (最明显的): Shared memory + tiling: 3-5× 提升
 
-优化第二轮 (有意义的):
-  Autotune + num_stages: 1.5-2× 提升
+优化第二轮 (有意义的): Autotune + num_stages: 1.5-2× 提升
 
-优化第三轮 (辛苦的):
-  GROUP_M + fine-tuning: 1.1-1.2× 提升
+优化第三轮 (辛苦的): GROUP_M + fine-tuning: 1.1-1.2× 提升
 
-优化第四轮 (最后几 %):
-  微调每 1% 可能需要数小时或数天
-  评估 ROI — 是否值得？
-```
+优化第四轮 (最后几 %): 微调每 1% 可能需要数小时或数天, 评估 ROI — 是否值得？
 
 ### 何时停止优化？
 
-```
 1. 已经达到行业标准
-   → GEMM: 70-80% cuBLAS 已经很好
-   → 对于 fused kernel: 能打败 unfused 即可
+   - GEMM: 70-80% cuBLAS 已经很好
+   - 对于 fused kernel: 能打败 unfused 即可
 
 2. 瓶颈已经改变
-   → 原来 compute-bound → 优化后变成 memory-bound
-   → 新的瓶颈可能需要完全不同的策略
+   - 原来 compute-bound → 优化后变成 memory-bound
+   - 新的瓶颈可能需要完全不同的策略
 
 3. 时间投入不值得
-   → 最后 10% 可能需要 90% 的时间
-   → 考虑用 CUTILE 重写（如果确实需要那 10%）
-```
+   - 最后 10% 可能需要 90% 的时间
+   - 考虑用 CUTILE 重写 (如果确实需要那 10%)
 
 ---
 

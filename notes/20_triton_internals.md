@@ -1,4 +1,4 @@
-# 13 — Triton 内部机制：JIT、Cache、Driver
+# 20 — Triton 内部机制：JIT、Cache、Driver
 
 > 了解 Triton 如何编译和管理 kernel，帮助你 debug 编译问题、管理 cache、理解性能。
 
@@ -51,24 +51,26 @@ Triton 内部:
 
 ### 1.2 Cache 哈希
 
-```python
-# Triton 的 cache key 由以下因素决定:
-# 1. kernel 源代码的 hash
-# 2. 所有 tl.constexpr 参数的值
-# 3. autotune config (num_warps, num_stages, ...)
-# 4. GPU 架构 (SM version)
-# 5. Triton 版本
-# 
-# 任何一项变化 → 不同的 cache key → 重新编译
+Triton 的 cache key 由以下因素决定:
+1. kernel 源代码的 hash
+2. 所有 tl.constexpr 参数的值
+3. autotune config (num_warps, num_stages, ...)
+4. GPU 架构 (SM version)
+5. Triton 版本
 
-# 查看 cache:
+任何一项变化 → 不同的 cache key → 重新编译
+
+查看 cache:
+```bash
 ls ~/.triton/cache/
-# 输出: 一堆 hash 目录
-
-# 清理 cache:
-rm -rf ~/.triton/cache/
-# 下次运行会重新编译所有 kernel
 ```
+输出: 一堆 hash 目录
+
+清理 cache:
+```bash
+rm -rf ~/.triton/cache/
+```
+下次运行会重新编译所有 kernel
 
 ### 1.3 强制重编译
 
@@ -111,7 +113,6 @@ def my_kernel(x_ptr, N, BLOCK_SIZE: tl.constexpr):
 
 ### 2.2 AST 限制
 
-```
 Triton 的 Python AST 分析有限制:
 
 ✅ 支持:
@@ -128,7 +129,6 @@ Triton 的 Python AST 分析有限制:
   - try/except
   - 闭包/高阶函数
   - generator/yield
-```
 
 ---
 
@@ -136,7 +136,6 @@ Triton 的 Python AST 分析有限制:
 
 ### 3.1 Driver API 调用流程
 
-```
 Triton 调用序列（简化）:
 
 1. cuModuleLoad(compiled_cubin)
@@ -152,7 +151,6 @@ Triton 调用序列（简化）:
 
 5. cuStreamSynchronize(stream)
    → 如果 torch.cuda.synchronize() 被调用
-```
 
 ### 3.2 Stream 管理
 
@@ -173,31 +171,29 @@ with torch.cuda.stream(torch.cuda.Stream()):
 
 ### 4.1 编译耗时分析
 
-```python
-# 如果第一次运行很慢（几秒到几十秒），那是正常的 — 这是 JIT 编译
+如果第一次运行很慢（几秒到几十秒），那是正常的 — 这是 JIT 编译
 
-# 查看编译缓存:
+查看编译缓存:
+```bash
 ls ~/.triton/cache/
-# 每个 hash 目录对应一个 kernel 的一组参数
-
-# 如果每次运行都重新编译:
-# 1. 检查是不是每次都改了 autotune config
-# 2. 检查 cache 目录是否可写
-# 3. 检查 disk 空间
 ```
+每个 hash 目录对应一个 kernel 的一组参数
+
+如果每次运行都重新编译:
+1. 检查是不是每次都改了 autotune config
+2. 检查 cache 目录是否可写
+3. 检查 disk 空间
 
 ### 4.2 Autotune Cache
 
-```python
-# Autotune 的结果也缓存在 ~/.triton/cache/ 中
-# 格式: cache/<hash>/autotune_config.json
+Autotune 的结果也缓存在 ~/.triton/cache/ 中
+格式: cache/<hash>/autotune_config.json
 
-# 第一次运行: 测试所有 config → 缓存最优
-# 后续运行: 直接从 cache 读取最优 config → 快速启动
+第一次运行: 测试所有 config → 缓存最优
+后续运行: 直接从 cache 读取最优 config → 快速启动
 
-# 如果改了 kernel 代码 → cache 失效 → 重新 autotune
-# 如果只改了输入大小 → 不同 key → 不同 cache entry
-```
+如果改了 kernel 代码 → cache 失效 → 重新 autotune
+如果只改了输入大小 → 不同 key → 不同 cache entry
 
 ---
 

@@ -1,4 +1,4 @@
-# 09 — Tensor Core 深入：从 PTX 指令到性能优化
+# 04 — Tensor Core 深入：从 PTX 指令到性能优化
 
 > Tensor Core 是 NVIDIA GPU 上矩阵乘法的硬件加速器。理解它的工作原理，是达到 >70% peak TFLOPS 的关键。
 
@@ -27,17 +27,21 @@ Tensor Core 做乘法:
 
 ### 2.1 指令格式
 
-```
-mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32
+$$
+\text{mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32}
+$$
 
 解读:
-  m16n8k16: 输出 tile 大小: M=16, N=8, K=16
-  row.col: A 矩阵是 row-major, B 是 col-major（相对 PTX 来说）
-  f32: D（输出/累加）的类型
-  f16: A 的类型
-  f16: B 的类型
-  f32: C（累加器输入）的类型
-```
+$$
+\begin{aligned}
+\text{m16n8k16: 输出 tile 大小: } & M = 16,\ N = 8,\ K = 16 \\
+\text{row.col: } & \text{A 矩阵是 row-major, B 是 col-major（相对 PTX 来说）} \\
+\text{f32: } & \text{D（输出/累加）的类型} \\
+\text{f16: } & \text{A 的类型} \\
+\text{f16: } & \text{B 的类型} \\
+\text{f32: } & \text{C（累加器输入）的类型}
+\end{aligned}
+$$
 
 ### 2.2 不同架构的 MMA 规格
 
@@ -77,23 +81,13 @@ Triton 编译器自动决定 fragment 分配方案。
 
 ### 3.1 MMA 的硬性要求
 
-```
-1. Tile 大小固定:
-   不能做 15×7×15 的 MMA — 必须是硬件支持的尺寸
-   Triton 处理: tl.dot 自动选择合适的 MMA 指令
+1. **Tile 大小固定**: 不能做 $15 \times 7 \times 15$ 的 MMA — 必须是硬件支持的尺寸。Triton 处理: `tl.dot` 自动选择合适的 MMA 指令。
 
-2. 数据类型固定:
-   Ampere 支持 fp16, bf16, tf32, int8, int4, int1
-   fp32 不能直接用 Tensor Core（只能用 CUDA Core）
+2. **数据类型固定**: Ampere 支持 `fp16`, `bf16`, `tf32`, `int8`, `int4`, `int1`。`fp32` 不能直接用 Tensor Core（只能用 CUDA Core）。
 
-3. Fragment 布局固定:
-   输入张量必须以特定的布局排列（DotOperandEncodingAttr）
-   不同于常规的 BlockedEncoding
+3. **Fragment 布局固定**: 输入张量必须以特定的布局排列（`DotOperandEncodingAttr`），不同于常规的 `BlockedEncoding`。
 
-4. 需要 warp 内同步:
-   32 个线程必须同时执行 MMA（锁步执行）
-   硬件隐式同步
-```
+4. **需要 warp 内同步**: 32 个线程必须同时执行 MMA（锁步执行）。硬件隐式同步。
 
 ### 3.2 Triton 如何映射 tl.dot
 
@@ -116,21 +110,15 @@ acc += tl.dot(a, b)  # a: [128, 32] fp16, b: [32, 256] fp16
 
 ### 4.1 为什么需要 FP8？
 
-```
-FP16 (16 bits, 5 exponent + 10 mantissa + 1 sign):
-  范围: ±65504, 精度: 3.3 位十进制
+**FP16** (16 bits, 5 exponent + 10 mantissa + 1 sign): 范围 $\pm 65504$, 精度: 3.3 位十进制
 
-FP8 E4M3 (8 bits, 4 exponent + 3 mantissa + 1 sign):
-  范围: ±448, 精度: 1 位十进制
-  
-FP8 E5M2 (8 bits, 5 exponent + 2 mantissa + 1 sign):
-  范围: ±57344, 精度: 0.6 位十进制
+**FP8 E4M3** (8 bits, 4 exponent + 3 mantissa + 1 sign): 范围 $\pm 448$, 精度: 1 位十进制
 
-关键: FP8 的精度不够直接做整个 GEMM
-  但通过 block-wise scaling（每 block 独立 scale），可以保持精度
-  → H100 上用 FP8 GEMM ≈ 2× FP16 的吞吐量
-  → 对 LLM inference 特别有用（少量精度损失，换来 2× 速度）
-```
+**FP8 E5M2** (8 bits, 5 exponent + 2 mantissa + 1 sign): 范围 $\pm 57344$, 精度: 0.6 位十进制
+
+关键: FP8 的精度不够直接做整个 GEMM。但通过 block-wise scaling（每 block 独立 scale），可以保持精度
+$\rightarrow$ H100 上用 FP8 GEMM $\approx 2\times$ FP16 的吞吐量
+$\rightarrow$ 对 LLM inference 特别有用（少量精度损失，换来 $2\times$ 速度）
 
 ### 4.2 Triton 中的 FP8
 
@@ -157,55 +145,41 @@ def fp8_matmul(a_ptr, b_ptr, c_ptr, ...):
 
 ### 5.1 什么能被加速？
 
-```
-Ampere+ 的硬件 sparsity 支持:
-  只有在"每组 4 个连续元素中恰好有 2 个为 0"时才能加速
-  → 2:4 structured sparsity
+Ampere+ 的硬件 sparsity 支持: 只有在"每组 4 个连续元素中恰好有 2 个为 0"时才能加速
+$\rightarrow$ 2:4 structured sparsity
 
-  例: [a, 0, c, 0, e, 0, g, 0] ← 每 4 个中有 2 个零 → 可以 2×
-      [0, 0, c, d, 0, 0, g, h] ← 不行（前面 3 个零）
+例: `[a, 0, c, 0, e, 0, g, 0]` $\leftarrow$ 每 4 个中有 2 个零 $\rightarrow$ 可以 $2\times$
+`[0, 0, c, d, 0, 0, g, h]` $\leftarrow$ 不行（前面 3 个零）
 
-  tensor core 会自动:
-  - 跳过 0 元素的计算
-  - 将有效元素打包为原来的 1/2 的存储
-  - 吞吐翻倍（2× peak TFLOPS）
-```
+Tensor Core 会自动:
+- 跳过 0 元素的计算
+- 将有效元素打包为原来的 $1/2$ 的存储
+- 吞吐翻倍（$2\times$ peak TFLOPS）
 
 ### 5.2 Triton 中的 Sparsity
 
-```
-Triton 目前不直接支持 2:4 sparsity。
-但通过:
-  1. 在数据准备阶段做 2:4 pruning
-  2. 用 torch.sparse 格式传递
-  3. Triton kernel 中绕过零元素
+Triton 目前不直接支持 2:4 sparsity。但通过:
+1. 在数据准备阶段做 2:4 pruning
+2. 用 `torch.sparse` 格式传递
+3. Triton kernel 中绕过零元素
 
-  实际上这个流程很复杂，Triton 的 sparsity 支持仍在发展中。
-```
+实际上这个流程很复杂，Triton 的 sparsity 支持仍在发展中。
 
 ---
 
 ## 6. Tensor Core 性能 Checklist
 
-```
-□ 1. 使用了 fp16/bf16/tf32 输入？
-     → fp32 不能用 Tensor Core（除非用 tf32）
-     
-□ 2. BLOCK_K 是 16 的倍数？
-     → MMA 的 K 维是 16，确保你的 BLOCK_K % 16 == 0
-     
-□ 3. BLOCK_M 是 16 的倍数，BLOCK_N 是 8 的倍数？
-     → 确保 tl.dot 能被整数次 MMA 覆盖
-     
-□ 4. 数据在 GPU 上是 row-major 的？
-     → PyTorch 默认 row-major，Triton 默认处理 row-major
-     
-□ 5. 累加器用 fp32？
-     → acc = tl.zeros([...], dtype=tl.float32)
-     
-□ 6. 检查 PTX 中有 mma.sync 指令？
-     → TRITON_KERNEL_DUMP=1 → grep mma.sync → 确认用了 Tensor Core
-```
+□ 1. 使用了 `fp16`/`bf16`/`tf32` 输入？$\rightarrow$ `fp32` 不能用 Tensor Core（除非用 `tf32`）
+
+□ 2. `BLOCK_K` 是 16 的倍数？$\rightarrow$ MMA 的 K 维是 16，确保 `BLOCK_K % 16 == 0`
+
+□ 3. `BLOCK_M` 是 16 的倍数，`BLOCK_N` 是 8 的倍数？$\rightarrow$ 确保 `tl.dot` 能被整数次 MMA 覆盖
+
+□ 4. 数据在 GPU 上是 row-major 的？$\rightarrow$ PyTorch 默认 row-major，Triton 默认处理 row-major
+
+□ 5. 累加器用 `fp32`？$\rightarrow$ `acc = tl.zeros([...], dtype=tl.float32)`
+
+□ 6. 检查 PTX 中有 `mma.sync` 指令？$\rightarrow$ `TRITON_KERNEL_DUMP=1` $\rightarrow$ `grep mma.sync` $\rightarrow$ 确认用了 Tensor Core
 
 ---
 

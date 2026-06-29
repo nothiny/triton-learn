@@ -1,4 +1,4 @@
-# 06 — 调试 Triton Kernel：从"跑不通"到"跑得对"
+# 08 — 调试 Triton Kernel：从"跑不通"到"跑得对"
 
 > ⚠️ 最容易被忽视但最重要的笔记。GPU kernel debug 比 CPU 难 10 倍——没有 printf、没有断点、错误信息晦涩。这篇整理了所有可用的调试工具和常见 Bug 清单。
 
@@ -264,37 +264,35 @@ def kernel(ptr, N, BLOCK_SIZE: tl.constexpr):
 
 ## 4. 系统性 Debug 工作流
 
-```
-遇到 bug 时，按顺序尝试:
-
-□ 1. 缩小问题规模 (M=N=K=4 或 8)
-     → 使用已知的输入（arange, ones, zeros）
-     → 手算预期输出，对比
-
-□ 2. TRITON_INTERPRET=1
-     → 在 CPU 上运行，获得 Python traceback
-     → 可以加 pdb 断点
-
-□ 3. tl.device_print
-     → 打印中间值（第一个 program 的前几个元素）
-
-□ 4. 从工作 kernel 逐步修改
-     → vector_add → 一点一点改成你的目标 kernel
-     → 每步验证
-
-□ 5. 检查 IR dump
-     → TRITON_KERNEL_DUMP=1
-     → 看 TTGIR 中 layout 是否符合预期
-     → 检查是否有意外的 ConvertLayout
-
-□ 6. 检查 PTX
-     → 看生成的 PTX 中 ld/st 指令地址计算是否正确
-     → 确认使用了 mma.sync（如果有 tl.dot）
-
-□ 7. ncu 检查
-     → 看 achieved occupancy、memory throughput
-     → 排除硬件层面的异常（stall、bank conflict）
-```
+    遇到 bug 时，按顺序尝试:
+    
+    □ 1. 缩小问题规模 (M=N=K=4 或 8)
+         → 使用已知的输入（arange, ones, zeros）
+         → 手算预期输出，对比
+    
+    □ 2. TRITON_INTERPRET=1
+         → 在 CPU 上运行，获得 Python traceback
+         → 可以加 pdb 断点
+    
+    □ 3. tl.device_print
+         → 打印中间值（第一个 program 的前几个元素）
+    
+    □ 4. 从工作 kernel 逐步修改
+         → vector_add → 一点一点改成你的目标 kernel
+         → 每步验证
+    
+    □ 5. 检查 IR dump
+         → TRITON_KERNEL_DUMP=1
+         → 看 TTGIR 中 layout 是否符合预期
+         → 检查是否有意外的 ConvertLayout
+    
+    □ 6. 检查 PTX
+         → 看生成的 PTX 中 ld/st 指令地址计算是否正确
+         → 确认使用了 mma.sync（如果有 tl.dot）
+    
+    □ 7. ncu 检查
+         → 看 achieved occupancy、memory throughput
+         → 排除硬件层面的异常（stall、bank conflict）
 
 ---
 

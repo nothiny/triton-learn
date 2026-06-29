@@ -1,7 +1,7 @@
-# 22 — 生产级 Triton Kernel 优化清单
+# 13 — 生产级 Triton Kernel 优化清单
 
 > **目标**: 一份系统化的 checklist，覆盖从"能跑"到"生产可用"的每个维度——代码、内存、计算、调度、数值、调优、测试、profiling。
-> **前置**: 笔记 01-02（编程模型、内存层级）、笔记 19（Block Pointer API）、至少写过 3 个 kernel
+> **前置**: 笔记 01-02（编程模型、内存层级）、笔记 15（Block Pointer API）、至少写过 3 个 kernel
 
 ---
 
@@ -127,19 +127,22 @@ for k in range(0, K, BK):
 
 ### 3.1 Tensor Core 利用率自查
 
-```
-利用率 = 实际 TFLOPS / GPU Peak TFLOPS
+$$
+\text{利用率} = \frac{\text{实际 TFLOPS}}{\text{GPU Peak TFLOPS}}
+$$
 
 H100 (fp16): peak ~990 TFLOPS
-  利用率 > 80%: ✅ 优秀
-  利用率 60-80%: ⚠️ 还行，还有优化空间
-  利用率 < 60%: ❌ 需要检查: 是否 memory-bound？block size 太小？
+- 利用率 > 80%: 优秀
+- 利用率 60-80%: 还行，还有优化空间
+- 利用率 < 60%: 需要检查: 是否 memory-bound？block size 太小？
 
 检查方法:
-  python -c "
-  from utils.roofline import roofline_analysis
-  roofline_analysis(flops=2*M*N*K, bytes=..., time_ms=...)
-  "
+
+```python
+python -c "
+from utils.roofline import roofline_analysis
+roofline_analysis(flops=2*M*N*K, bytes=..., time_ms=...)
+"
 ```
 
 ---
@@ -148,19 +151,21 @@ H100 (fp16): peak ~990 TFLOPS
 
 ### 4.1 Occupancy 基础
 
-```
-Occupancy = 每个 SM 上活跃的 warp 数 / 理论最大 warp 数
+$$
+\text{Occupancy} = \frac{\text{每个 SM 上活跃的 warp 数}}{\text{理论最大 warp 数}}
+$$
 
 影响因素:
-  1. 每个 thread 的寄存器数（register pressure）
-  2. 每个 block 的 shared memory 用量
-  3. block size（threads per CTA）
+1. 每个 thread 的寄存器数（register pressure）
+2. 每个 block 的 shared memory 用量
+3. block size（threads per CTA）
 
 寄存器压力是最常见的 occupancy 杀手:
-  - 过多局部变量 → 寄存器溢出 (spill to HBM) → 性能暴跌
-  - 每个 SM 的寄存器池有限 (H100: 65536 寄存器/SM)
-  - 寄存器/thread × threads/block × blocks/SM ≤ 65536
-```
+- 过多局部变量 → 寄存器溢出 (spill to HBM) → 性能暴跌
+- 每个 SM 的寄存器池有限 (H100: 65536 寄存器/SM)
+- $$
+\frac{\text{寄存器}}{\text{thread}} \times \frac{\text{threads}}{\text{block}} \times \frac{\text{blocks}}{\text{SM}} \le 65536
+$$
 
 ### 4.2 ✅ Checklist
 
@@ -363,25 +368,21 @@ a_strided = a.T.contiguous().T  # 改变 stride
 
 ### 8.1 分层 profiling
 
-```
-Level 1: 快速诊断 (30s)
-  → python -c "from utils.roofline import roofline_analysis; ..."
-  → 回答: memory-bound 还是 compute-bound？
+**Level 1: 快速诊断 (30s)**
+- `python -c "from utils.roofline import roofline_analysis; ..."`
+- 回答: memory-bound 还是 compute-bound？
 
-Level 2: Triton 层面 (2 min)
-  → TRITON_KERNEL_DUMP=1 python my_kernel.py | grep -E "cp.async|mma|tma"
-  → 回答: cp.async 是否在用？MMA 指令对不对？
+**Level 2: Triton 层面 (2 min)**
+- `TRITON_KERNEL_DUMP=1 python my_kernel.py | grep -E "cp.async|mma|tma"`
+- 回答: cp.async 是否在用？MMA 指令对不对？
 
-Level 3: ncu 详细分析 (10 min)
-  → ncu --set full python my_kernel.py
-  → 回答: occupancy, register pressure, memory throughput,
-           Tensor Core utilization, L1/L2 hit rate
+**Level 3: ncu 详细分析 (10 min)**
+- `ncu --set full python my_kernel.py`
+- 回答: occupancy, register pressure, memory throughput, Tensor Core utilization, L1/L2 hit rate
 
-Level 4: Nsight Systems 时间线 (10 min)
-  → nsys profile python my_kernel.py
-  → 回答: 哪个 kernel 是瓶颈？launch overhead 多少？
-           CPU/GPU 同步点多吗？
-```
+**Level 4: Nsight Systems 时间线 (10 min)**
+- `nsys profile python my_kernel.py`
+- 回答: 哪个 kernel 是瓶颈？launch overhead 多少？CPU/GPU 同步点多吗？
 
 ### 8.2 关键 ncu metrics
 
@@ -446,37 +447,35 @@ ncu --metrics \
 
 ## 10. 总结: 优化顺序（先做什么、后做什么）
 
-```
-Step 1: 写对（验证正确性）
-  → 手工指针 or block_ptr 都可以
-  → 测试多种 shape
+**Step 1: 写对（验证正确性）**
+- 手工指针 or block_ptr 都可以
+- 测试多种 shape
 
-Step 2: 搬数据（内存优化）
-  → 换 block_ptr + boundary_check
-  → num_stages >= 2
-  → 检查 coalescing
+**Step 2: 搬数据（内存优化）**
+- 换 block_ptr + boundary_check
+- `num_stages >= 2`
+- 检查 coalescing
 
-Step 3: 算得快（计算优化）
-  → tl.dot → Tensor Core
-  → fp32 accumulator
-  → block_shape 是 MMA tile 的倍数
+**Step 3: 算得快（计算优化）**
+- `tl.dot` → Tensor Core
+- fp32 accumulator
+- block_shape 是 MMA tile 的倍数
 
-Step 4: 喂得饱（调度优化）
-  → autotune grid/block sizes
-  → 检查 occupancy
-  → 必要时 persistent kernel
+**Step 4: 喂得饱（调度优化）**
+- autotune grid/block sizes
+- 检查 occupancy
+- 必要时 persistent kernel
 
-Step 5: 压得紧（微调）
-  → 用 ncu 找瓶颈
-  → TRITON_ENABLE_TMA=1
-  → 减少寄存器压力
-  → autotune 扩大 config space
+**Step 5: 压得紧（微调）**
+- 用 ncu 找瓶颈
+- `TRITON_ENABLE_TMA=1`
+- 减少寄存器压力
+- autotune 扩大 config space
 
-Step 6: 生产化（工程）
-  → 单元测试
-  → perf model / roofline
-  → 文档
-```
+**Step 6: 生产化（工程）**
+- 单元测试
+- perf model / roofline
+- 文档
 
 **每个 step 之间验证性能——不要跳过 Step 1！**
 
@@ -484,7 +483,7 @@ Step 6: 生产化（工程）
 
 ## 参考资料
 
-- 本笔记系列的所有前置笔记（00-18）
+- 本笔记系列的所有前置笔记（00-12）
 - `utils/roofline.py` — Roofline 分析工具
 - `utils/profiler.py` — `KernelProfiler` 和 `GPUInfo`
 - [NVIDIA Nsight Compute Documentation](https://docs.nvidia.com/nsight-compute/)

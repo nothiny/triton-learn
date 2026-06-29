@@ -1,4 +1,4 @@
-# 03 — Triton 编译器管线
+# 21 — Triton 编译器管线
 
 > ⭐ **这是整个项目最核心的笔记。** 理解 Triton 编译器如何把你的 Python kernel 变成 GPU 指令，是写出高性能 kernel 的关键。
 > 前半部分写给所有人，后半部分（🔧 标记）写给有编译器背景的读者。
@@ -281,25 +281,34 @@ LLVM NVPTX backend 生成 PTX：
 
 ### 3.3 怎么读 Layout？
 
-```
-公式:
-  total_size = (warpsPerCTA × threadsPerWarp × sizePerThread)
 
-  逐个维度:
-    dim 0: warpsPerCTA[0] × threadsPerWarp[0] × sizePerThread[0]
-          = 4 × 2 × 1 = 8  (等等...不应该是 128 吗？)
-    
-  注意: 上面的是每个 warp 内部的分布，乘以 warpsPerCTA 才是 CTA 总数。
-  实际: warpsPerCTA × threadsPerWarp × sizePerThread = 4×2×1 × 2×16×4
-  但各维是交叉的，要按 order 去理解。
+$$
+\begin{aligned}
+\text{公式: total\_size} &= (\text{warpsPerCTA} \times \text{threadsPerWarp} \times \text{sizePerThread}) \\[4pt]
+\text{逐个维度:} \\
+\text{dim 0: } &\text{warpsPerCTA}[0] \times \text{threadsPerWarp}[0] \times \text{sizePerThread}[0] \\
+&= 4 \times 2 \times 1 = 8 \quad (\text{等等...不应该是 128 吗？})
+\end{aligned}
+$$
 
-  简化理解: 
-    dim 0 的分布: warpsPerCTA[0] × threadsPerWarp[0] × sizePerThread[0] = 4×2×1 = 8
-    dim 1 的分布: warpsPerCTA[1] × threadsPerWarp[1] × sizePerThread[1] = 1×16×4 = 64
-    
-  等等，8×64 ≠ 128×64...实际上 order=[0,1] 意味着 dim0 是 innermost，
-  各维度的乘法关系是: threadsPerWarp 的各维乘积 = 32，warpsPerCTA 的各维 ≈ num_warps。
-```
+注意: 上面的是每个 warp 内部的分布，乘以 warpsPerCTA 才是 CTA 总数。
+
+$$
+\text{warpsPerCTA} \times \text{threadsPerWarp} \times \text{sizePerThread} = 4 \times 2 \times 1 \times 2 \times 16 \times 4
+$$
+
+但各维是交叉的，要按 order 去理解。
+
+$$
+\begin{aligned}
+\text{简化理解:} \\
+\text{dim 0 的分布: } &\text{warpsPerCTA}[0] \times \text{threadsPerWarp}[0] \times \text{sizePerThread}[0] = 4 \times 2 \times 1 = 8 \\
+\text{dim 1 的分布: } &\text{warpsPerCTA}[1] \times \text{threadsPerWarp}[1] \times \text{sizePerThread}[1] = 1 \times 16 \times 4 = 64
+\end{aligned}
+$$
+
+等等，$8 \times 64 \neq 128 \times 64$...实际上 `order=[0,1]` 意味着 dim0 是 innermost，各维度的乘法关系是: `threadsPerWarp` 的各维乘积 $= 32$，`warpsPerCTA` 的各维 $\approx$ `num_warps`.
+
 
 > 💡 **实际建议**: 不需要能心算 layout。用 `phase3_compiler/02_layout_analysis.py` 可视化。理解概念就行：layout 就是"线程→数据"的分配方案。
 
@@ -356,7 +365,6 @@ Blocked layout:                    MMA layout:
 
 这是整个编译流程中最关键的一步。
 
-```
 输入: TTIR（纯数学描述，无 GPU 信息）
 输出: TTGIR（每个 op 有 layout encoding，知道数据怎么分配到线程）
 
@@ -367,20 +375,21 @@ Blocked layout:                    MMA layout:
 
 类比: 这是寄存器分配 + 指令调度 + 数据布局的融合 pass。
       在传统编译器中，这些是分开做的；Triton 一次性做完。
-```
 
 **2. `TritonGPUAccelerateMatmul` — 启用 Tensor Core**
 
-```
-tt.dot → 识别为矩阵乘 → 替换为 MMA intrinsic
 
-具体:
-  输入: tt.dot(%a, %b) : tensor<M×K> @ tensor<K×N> → tensor<M×N>
-  输出: MMA 操作序列，使用 MmaEncodingAttr
-  自动选择: m16n8k16 (Ampere) 或 m16n8k32 (Hopper)
+$$
+\begin{aligned}
+\text{tt.dot } &\rightarrow \text{ 识别为矩阵乘 } \rightarrow \text{ 替换为 MMA intrinsic} \\[4pt]
+\text{具体:} \\
+\text{输入: } &\text{tt.dot}(\%a, \%b) : \text{tensor}\langle M \times K \rangle \otimes \text{tensor}\langle K \times N \rangle \rightarrow \text{tensor}\langle M \times N \rangle \\
+\text{输出: } &\text{MMA 操作序列，使用 MmaEncodingAttr} \\
+&\text{自动选择: m16n8k16 (Ampere) 或 m16n8k32 (Hopper)} \\[4pt]
+\text{类比: } &\text{LLVM 的 ISel（指令选择）。把"通用运算"替换为"硬件特定指令"。}
+\end{aligned}
+$$
 
-类比: LLVM 的 ISel（指令选择）。把"通用运算"替换为"硬件特定指令"。
-```
 
 **3. `TritonGPUPipeline` — Software Pipelining**
 
@@ -421,9 +430,9 @@ num_stages=2:
 
 ### 5.2 三资源约束
 
-```
 每个 SM 的资源是固定的（H100）:
 
+```
 ┌──────────────────┬───────────┐
 │ 资源              │ 总量       │
 ├──────────────────┼───────────┤
@@ -433,14 +442,14 @@ num_stages=2:
 │ 最大 Blocks       │ 32        │
 └──────────────────┴───────────┘
 
+```
 你的 kernel 需要:
-  - 寄存器: num_warps × 32 × registers_per_thread
-  - Shared Memory: num_stages × tile_size × dtype_size
-  - Warps: num_warps
+- 寄存器: $\text{num\_warps} \times 32 \times \text{registers\_per\_thread}$
+- Shared Memory: $\text{num\_stages} \times \text{tile\_size} \times \text{dtype\_size}$
+- Warps: $\text{num\_warps}$
 
 如果任何一项超限，occupancy 就会下降。
 Triton 的 autotuner 就是在搜索这个三维空间。
-```
 
 > 🔧 **Compiler Perspective**: 这是经典的多目标资源优化问题。传统 CPU 编译器只需要考虑寄存器（spill cost），但 GPU 编译器需要同时优化 registers、shared memory、occupancy 三个相互制约的目标。Triton 的 autotuner 本质上是 iterative compilation——尝试多种配置，测实际性能，选最优的。
 
@@ -547,7 +556,6 @@ grep ".reg" ~/.triton/cache/*.ptx | wc -l  # 寄存器使用量
 
 ### 7.1 为什么需要自定义 Pass？
 
-```
 Triton 的内置 passes 覆盖了大多数场景，但有时你需要:
 
 1. 实验性优化: "如果我把这两个 op 融合，会快多少？"
@@ -555,7 +563,6 @@ Triton 的内置 passes 覆盖了大多数场景，但有时你需要:
 3. 分析: 统计 kernel 中某种 op 的数量、shared memory 使用
 
 Triton 提供了 Python API 来注册自定义 pass。
-```
 
 ### 7.2 自定义 Pass 的基本框架
 
@@ -675,7 +682,6 @@ TRITON_KERNEL_DUMP=1 TRITON_CUSTOM_PASSES=analyze_arith_intensity python my_kern
 
 ### 7.6 Triton Pass 系统的限制
 
-```
 当前 (Triton 3.x) 的限制:
 
 1. Python pass API 仍在发展中
@@ -694,7 +700,6 @@ TRITON_KERNEL_DUMP=1 TRITON_CUSTOM_PASSES=analyze_arith_intensity python my_kern
   → 需要 fork triton 源码
   → 用 C++ 写 MLIR pass（lib/Conversion/ 下）
   → 重新编译 triton
-```
 
 ---
 

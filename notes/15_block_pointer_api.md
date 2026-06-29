@@ -1,4 +1,4 @@
-# 19 — Block Pointer API 完全指南
+# 15 — Block Pointer API 完全指南
 
 > **目标**: 深入理解 `tl.make_block_ptr` + `tl.advance` 的完整语义，掌握从手工指针迁移到 block pointer 的最佳实践。
 > **前置**: 笔记 01（Triton 编程模型）、笔记 02（内存层级）、至少写过 `phase2_compute/02_matmul_tiled.py`
@@ -102,7 +102,6 @@ tl.make_block_ptr(
 
 `order` 决定了**线程如何在 block_shape 的各个维度上分布**，直接影响 coalescing。
 
-```
 order=(1, 0): dim 1 是 "innermost"（最内层）
   → 相邻 thread 映射到 dim 1 的相邻位置
   → 如果 dim 1 的 stride=1（列连续），则访问是 coalesced
@@ -112,21 +111,21 @@ order=(0, 1): dim 0 是 innermost
   → 相邻 thread 映射到 dim 0 的相邻位置
   → 如果 dim 0 的 stride=1（行连续），则访问是 coalesced
   → 适合 column-major（Fortran 风格）布局
-```
+
 
 **直觉理解**：
 
-```
-A[i, j] 的线性地址 = i * stride_am + j * stride_ak
+$A[i, j]$ 的线性地址 $= i \times \text{stride\_am} + j \times \text{stride\_ak}$
 
-如果 stride_ak=1（列连续）:
-  地址(A[i, j]) - 地址(A[i, j-1]) = 1  (列方向连续)
-  应该让相邻线程沿 j 方向 → order=(1,0)
+如果 $\text{stride\_ak}=1$（列连续）:
+  $\text{地址}(A[i, j]) - \text{地址}(A[i, j-1]) = 1$  (列方向连续)
+  应该让相邻线程沿 $j$ 方向 → $\text{order}=(1,0)$
 
-如果 stride_am=1（行连续）:
-  地址(A[i, j]) - 地址(A[i-1, j]) = 1  (行方向连续)
-  应该让相邻线程沿 i 方向 → order=(0,1)
-```
+如果 $\text{stride\_am}=1$（行连续）:
+  $\text{地址}(A[i, j]) - \text{地址}(A[i-1, j]) = 1$  (行方向连续)
+  应该让相邻线程沿 $i$ 方向 → $\text{order}=(0,1)$
+
+
 
 **选择 `order` 的法则**：
 
@@ -234,7 +233,6 @@ p = tl.make_block_ptr(base=x_ptr, shape=(N,), strides=(1,),
 
 ### 3.2 性能考虑
 
-```
 boundary_check=(0,1): 每个 tile access 都做边界检查
   → 编译器插入 predicated load 指令
   → 小幅开销（~2-5%），但对正确性是必要的
@@ -247,7 +245,7 @@ boundary_check=(): 不检查任何边界
 权衡: 
   - 生产代码推荐始终用 boundary_check（安全第一）
   - 只在 profiler 确认 bottleneck 且你 100% 确定整除时才省略
-```
+
 
 ---
 

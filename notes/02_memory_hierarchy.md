@@ -44,21 +44,21 @@ GPU 实际做的:
 
 ### 1.1 各层的带宽意味着什么？
 
-```
-HBM (3.35 TB/s):
-  每秒可以读 3.35 × 10^12 字节
-  = 每秒约 8.38 亿个 fp32 数字
-  = 每毫秒约 83.8 万个
-
-Shared Memory (~128 B/clk/SM, 132 SM @ 1.9 GHz):
-  每秒约 128 × 1.9G × 132 ≈ 32 TB/s (总计，所有 SM)
-  约 HBM 的 10 倍带宽
-
-Register:
-  每个 cycle 每个线程可以读 ~1 个寄存器
-  一个 SM 有 2048 个活跃线程 × 1.9 GHz ≈ 3.9 T 次访问/秒
-  但每次访问只读 4 字节（单精度）
-```
+$$
+\begin{aligned}
+&\text{HBM (3.35 TB/s):} \\
+&\quad \text{每秒可以读 } 3.35 \times 10^{12} \text{ 字节} \\
+&\quad = \text{每秒约 } 8.38 \times 10^{8} \text{ 个 fp32 数字} \\
+&\quad = \text{每毫秒约 } 8.38 \times 10^{5} \text{ 个} \\[4pt]
+&\text{Shared Memory ($\sim$128 B/clk/SM, 132 SM @ 1.9 GHz):} \\
+&\quad \text{每秒约 } 128 \times 1.9 \times 10^{9} \times 132 \approx 32 \text{ TB/s (总计，所有 SM)} \\
+&\quad \text{约 HBM 的 10 倍带宽} \\[4pt]
+&\text{Register:} \\
+&\quad \text{每个 cycle 每个线程可以读 $\sim$1 个寄存器} \\
+&\quad \text{一个 SM 有 2048 个活跃线程 $\times$ 1.9 GHz $\approx$ } 3.9 \times 10^{12} \text{ 次访问/秒} \\
+&\quad \text{但每次访问只读 4 字节（单精度）}
+\end{aligned}
+$$
 
 ---
 
@@ -243,22 +243,11 @@ def matmul_kernel(...):
 
 ### 4.4 num_stages 选择的 tradeoff
 
-```
-num_stages=1:
-  优点: 不占用额外的 shared memory
-  缺点: 加载和计算串行，SM 利用率低
-  适用: shared memory 已经很紧张的情况
+**num_stages=1**: 优点: 不占用额外的 shared memory; 缺点: 加载和计算串行，SM 利用率低; 适用: shared memory 已经很紧张的情况
 
-num_stages=2 (最常用):
-  优点: 加载和计算可以重叠，简单有效
-  缺点: 需要 2x shared memory
-  适用: 大多数 GEMM kernel
+**num_stages=2 (最常用)**: 优点: 加载和计算可以重叠，简单有效; 缺点: 需要 2x shared memory; 适用: 大多数 GEMM kernel
 
-num_stages=3:
-  优点: 更深的延迟隐藏（如果 HBM 延迟是瓶颈）
-  缺点: 需要 3x shared memory
-  适用: HBM 延迟特别大的场景（或数据量极大时）
-```
+**num_stages=3**: 优点: 更深的延迟隐藏（如果 HBM 延迟是瓶颈）; 缺点: 需要 3x shared memory; 适用: HBM 延迟特别大的场景（或数据量极大时）
 
 ---
 
@@ -299,23 +288,26 @@ Triton 的状态:  目前（3.x）对 TMA 的支持有限
 
 ### 6.1 快速判断
 
-```
 问自己 3 个问题:
 
-1. 算术强度高吗？
-   AI = 算法 FLOPs / HBM 访问字节数
-   AI > GPU ridge point → compute bound
-   AI < GPU ridge point → memory bound
-   (ridge point: H100 ≈ 295 FLOP/byte, A100 ≈ 156 FLOP/byte)
+**1. 算术强度高吗？**
 
-2. 如果我减少 HBM 访问（加 fusion），性能能提升吗？
-   → 如果能 → memory bound
-   → 如果没用 → compute bound
+$$
+\begin{aligned}
+&\text{AI} = \frac{\text{FLOPs}}{\text{HBM 访问字节数}} \\[4pt]
+&\text{AI} > \text{GPU ridge point} \rightarrow \text{compute bound} \\
+&\text{AI} < \text{GPU ridge point} \rightarrow \text{memory bound} \\
+&\text{ridge point: H100} \approx 295 \text{ FLOP/byte, A100} \approx 156 \text{ FLOP/byte}
+\end{aligned}
+$$
 
-3. 用 ncu 看 achieved occupancy
-   → occupancy < 50% → 可能是 register/spared memory 压力太大
-   → occupancy > 80% → 资源利用率不错
-```
+**2. 如果我减少 HBM 访问（加 fusion），性能能提升吗？**
+- 如果能 → memory bound
+- 如果没用 → compute bound
+
+**3. 用 ncu 看 achieved occupancy**
+- occupancy < 50% → 可能是 register/shared memory 压力太大
+- occupancy > 80% → 资源利用率不错
 
 ### 6.2 Kernel 类型的典型特征
 

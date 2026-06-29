@@ -148,21 +148,17 @@ def vector_add(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
 
 ### 2.1 这段代码在 GPU 上实际发生了什么？
 
-```
-假设 n_elements=1000, BLOCK_SIZE=256:
+假设 `n_elements=1000`, `BLOCK_SIZE=256`:
 
 GPU 上会启动 4 个 block:
-  Block 0: 处理元素 0-255    (pid=0, block_start=0)
-  Block 1: 处理元素 256-511  (pid=1, block_start=256)
-  Block 2: 处理元素 512-767  (pid=2, block_start=512)
-  Block 3: 处理元素 768-999  (pid=3, block_start=768, mask掉760-999)
+- Block 0: 处理元素 0-255    (pid=0, block_start=0)
+- Block 1: 处理元素 256-511  (pid=1, block_start=256)
+- Block 2: 处理元素 512-767  (pid=2, block_start=512)
+- Block 3: 处理元素 768-999  (pid=3, block_start=768, mask 掉 760-999)
 
-如果 GPU 有 132 个 SM，这 4 个 block 会被分配到 4 个不同的 SM 上
-并行执行——每个 SM 跑一个 block，同时加载、计算、写回。
+如果 GPU 有 132 个 SM，这 4 个 block 会被分配到 4 个不同的 SM 上并行执行——每个 SM 跑一个 block，同时加载、计算、写回。
 
-Block 内部: 编译器自动把 256 个元素分配到该 block 的线程中。
-如果 num_warps=4 (8 warps = 128 线程)，每个线程处理 2 个元素。
-```
+Block 内部: 编译器自动把 256 个元素分配到该 block 的线程中。如果 `num_warps=4` (8 warps = 128 线程)，每个线程处理 2 个元素。
 
 ### 2.2 关键概念速查
 
@@ -241,27 +237,27 @@ def my_kernel(...):
 | `num_warps` | 每个 block 的 warp 数 | 更多并发，更好的延迟隐藏 | 每 warp 有更多寄存器 |
 | `num_stages` | Software pipeline 级数 | 更好的计算/加载重叠 | 更少 shared memory 占用 |
 
-> 💡 **实战建议**: 开始时从现有 kernel 的 autotune 配置抄一份，跑起来后再根据自己的 GPU 和数据调整。
+> **实战建议**: 开始时从现有 kernel 的 autotune 配置抄一份，跑起来后再根据自己的 GPU 和数据调整。
 
 ---
 
 ## 5. Grid 的计算
 
+1D grid（vector add, softmax, layernorm — 每个 block 处理一行或一段）:
 ```python
-# 1D grid（vector add, softmax, layernorm — 每个 block 处理一行或一段）
 grid = lambda meta: (triton.cdiv(n_elements, meta["BLOCK_SIZE"]),)
-#   ↑ lambda meta: 让 autotuner 传入当前测试的 config
+```
+`lambda meta:` 让 autotuner 传入当前测试的 config。
 
-# 2D grid（matmul — 每个 block 处理 C 的一块 tile）
+2D grid（matmul — 每个 block 处理 C 的一块 tile）:
+```python
 grid = lambda meta: (
     triton.cdiv(M, meta["BLOCK_M"]),  # M 维需要多少个 block
     triton.cdiv(N, meta["BLOCK_N"]),  # N 维需要多少个 block
 )
-
-# triton.cdiv(a, b) = ceil(a / b)
-# 例: triton.cdiv(1000, 256) = 4
-#         1000 / 256 = 3.90625 → ceil → 4
 ```
+
+`triton.cdiv(a, b)` = `ceil(a / b)`，例如 `triton.cdiv(1000, 256) = 4`（因为 `1000 / 256 = 3.90625`，向上取整得 4）。
 
 ---
 
@@ -284,33 +280,31 @@ grid = lambda meta: (
 
 ## 7. 从零写一个 Triton kernel 的 Checklist
 
-```
-□ 1. 确定 grid 维度 (1D? 2D? 3D?)
-     → 看你的数据自然是什么形状的
+1. **确定 grid 维度 (1D? 2D? 3D?)**
+   → 看你的数据自然是什么形状的
 
-□ 2. 写 kernel 函数
-     → tl.program_id 获取 block 索引
-     → tl.arange 生成线程偏移
-     → tl.load 加载数据（记得 mask 和 other）
-     → 计算（使用 Triton language ops）
-     → tl.store 写回数据
+2. **写 kernel 函数**
+   → `tl.program_id` 获取 block 索引
+   → `tl.arange` 生成线程偏移
+   → `tl.load` 加载数据（记得 mask 和 other）
+   → 计算（使用 Triton language ops）
+   → `tl.store` 写回数据
 
-□ 3. 写 Python 包装函数
-     → 分配输出 tensor
-     → 计算 grid = lambda meta: (...)
-     → kernel[grid](args...)
+3. **写 Python 包装函数**
+   → 分配输出 tensor
+   → 计算 `grid = lambda meta: (...)`
+   → `kernel[grid](args...)`
 
-□ 4. 加 autotune（可选但推荐）
-     → 列出候选 BLOCK_SIZE / num_warps / num_stages
-     → 确定 key（按什么特征选配置）
+4. **加 autotune（可选但推荐）**
+   → 列出候选 BLOCK_SIZE / num_warps / num_stages
+   → 确定 key（按什么特征选配置）
 
-□ 5. 测试正确性
-     → 对比 PyTorch reference，max_diff < 1e-3
+5. **测试正确性**
+   → 对比 PyTorch reference，`max_diff < 1e-3`
 
-□ 6. Benchmark
-     → CUDA Event 计时，计算 TFLOPS/带宽
-     → 分析是 compute bound 还是 memory bound
-```
+6. **Benchmark**
+   → CUDA Event 计时，计算 TFLOPS/带宽
+   → 分析是 compute bound 还是 memory bound
 
 ---
 

@@ -1,4 +1,4 @@
-# 14 — 常见 Kernel 模式：Reduce、Scan、Gather、Convolution
+# 06 — 常见 Kernel 模式：Reduce、Scan、Gather、Convolution
 
 > 除了 elementwise 和 GEMM，GPU 上还有很多常见的计算模式。这篇整理了在 Triton 中实现这些模式的惯用写法。
 
@@ -8,17 +8,20 @@
 
 ### 1.1 概念
 
-```
 Reduce: 把多个元素合并为一个（或少数几个）
 
 常见 reduce:
-  sum(x):   x₁ + x₂ + ... + xₙ
-  max(x):    max(x₁, x₂, ..., xₙ)
-  argmax(x): 最大值的索引
-  mean(x):  sum(x) / n
+
+$$
+\begin{aligned}
+\text{sum}(x) &: x_1 + x_2 + \cdots + x_n \\
+\text{max}(x) &: \max(x_1, x_2, \ldots, x_n) \\
+\text{argmax}(x) &: \text{最大值的索引} \\
+\text{mean}(x) &: \frac{\text{sum}(x)}{n}
+\end{aligned}
+$$
 
 Reduce 的本质: "沿某个维度聚合，产出更小的结果"
-```
 
 ### 1.2 Triton 实现：Row-wise Softmax
 
@@ -64,7 +67,6 @@ def reduce_kernel(x_ptr, out_ptr, N_COLS, BLOCK_SIZE: tl.constexpr):
 
 ### 1.3 Reduce 的性能要点
 
-```
 1. Reduce 通常是 memory-bound（很少 FLOPs per element）
    → 优化方向: 减少 HBM 遍历次数
 
@@ -75,7 +77,6 @@ def reduce_kernel(x_ptr, out_ptr, N_COLS, BLOCK_SIZE: tl.constexpr):
    - 多级 reduce（block-level → warp-level）
    - 使用 shared memory 缓存中间结果
    - 与后续 op 融合（如 fused softmax）
-```
 
 ---
 
@@ -83,17 +84,19 @@ def reduce_kernel(x_ptr, out_ptr, N_COLS, BLOCK_SIZE: tl.constexpr):
 
 ### 2.1 概念
 
-```
 Scan (prefix sum / cumulative sum):
 
-Input:  [a₁, a₂, a₃, a₄, a₅]
-Output: [a₁, a₁+a₂, a₁+a₂+a₃, a₁+a₂+a₃+a₄, a₁+a₂+a₃+a₄+a₅]
+$$
+\begin{aligned}
+\text{Input}:&\ [a_1, a_2, a_3, a_4, a_5] \\
+\text{Output}:&\ [a_1,\ a_1 + a_2,\ a_1 + a_2 + a_3,\ a_1 + a_2 + a_3 + a_4,\ a_1 + a_2 + a_3 + a_4 + a_5]
+\end{aligned}
+$$
 
 应用:
   - LayerNorm 的 mean/variance 计算
   - 排序、基数排序
   - Attention 的 causal masking
-```
 
 ### 2.2 Triton 实现：Parallel Prefix Sum
 
@@ -129,7 +132,6 @@ def inclusive_scan_kernel(x_ptr, out_ptr, N, BLOCK_SIZE: tl.constexpr):
 
 ### 2.3 Scan 的 Triton 限制
 
-```
 Scan 在 Triton 中比较难实现的原因:
 1. 有数据依赖（每个元素依赖前一个元素）
 2. Triton 的 block-level API 不直接支持这种依赖
@@ -138,7 +140,6 @@ Scan 在 Triton 中比较难实现的原因:
 替代方案:
 - 如果 scan 长度不大（<1024），用 PyTorch torch.cumsum 即可
 - 如果需要大 scan，考虑分段 scan（decompose into independent blocks）
-```
 
 ---
 
@@ -146,18 +147,22 @@ Scan 在 Triton 中比较难实现的原因:
 
 ### 3.1 概念
 
-```
 Gather:  根据索引数组从源数组中收集数据
-  output[i] = input[index[i]]
+
+$$
+\text{output}[i] = \text{input}[\text{index}[i]]
+$$
 
 Scatter: 根据索引数组向目标数组分发数据
-  output[index[i]] = input[i]
+
+$$
+\text{output}[\text{index}[i]] = \text{input}[i]
+$$
 
 应用:
   - Embedding lookup (gather)
   - Attention 的 KV cache 更新 (scatter)
   - Sparse matrix operations
-```
 
 ### 3.2 Triton 实现：Embedding Lookup (Gather)
 
@@ -228,23 +233,28 @@ def scatter_kernel(input_ptr, index_ptr, output_ptr,
 
 ### 4.1 三种实现策略
 
-```
 1. Direct convolution:
    直接写 conv 的 7 层嵌套循环
    优点: 简单，内存友好
    缺点: 难优化，cache 不友好
 
 2. Im2col + GEMM:
-   im2col: 把 (C, H, W) 展开为 (C*K*K, H_out*W_out) 矩阵
-   GEMM: C_out × (C*K*K) @ (C*K*K) × (H_out*W_out)
+
+   $$
+   \text{im2col}:\ (C, H, W) \to (C \cdot K \cdot K,\ H_{\text{out}} \cdot W_{\text{out}})
+   $$
+
+   $$
+   \text{GEMM}:\ C_{\text{out}} \times (C \cdot K \cdot K) \otimes (C \cdot K \cdot K) \times (H_{\text{out}} \cdot W_{\text{out}})
+   $$
+
    优点: 可以用高度优化的 GEMM
-   缺点: im2col 有内存膨胀（K*K×）
+   缺点: im2col 有内存膨胀（$K \cdot K \times$）
 
 3. Winograd / FFT:
    用数学变换减少乘法次数
    优点: 对特定 kernel size 极致优化
    缺点: 复杂，有精度问题
-```
 
 ### 4.2 Triton 中实现 Depthwise Conv
 
@@ -275,7 +285,6 @@ tl.atomic_xchg(ptr, val)    # 原子交换
 
 ### 5.2 Atomic 的性能代价
 
-```
 当多个线程对同一地址做 atomic 操作时:
   1 个线程: 正常速度
   2-4 个线程: 轻微变慢
@@ -285,7 +294,6 @@ tl.atomic_xchg(ptr, val)    # 原子交换
   1. 先做 local reduce，最后再 atomic 写一次
   2. 用 tiling 减少 atomic 的粒度
   3. 如果可以，用 shared memory buffer 先缓冲再写
-```
 
 ---
 

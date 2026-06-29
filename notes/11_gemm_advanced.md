@@ -1,4 +1,4 @@
-# 08 — GEMM 优化进阶：从 Tiled 到生产级
+# 11 — GEMM 优化进阶：从 Tiled 到生产级
 
 > **目标**: 理解从 naive matmul 到接近 cuBLAS 性能的每一步优化原理。
 > **前置**: Phase 2 的 01/02/03_matmul，笔记 02（内存层级）
@@ -56,42 +56,47 @@ for k in range(0, K, BLOCK_K):
 
 ### 1.2 Tiled 版本的改进
 
-```python
-# Tiled: 先把数据搬到 shared memory
-for k in range(0, K, BLOCK_K):
-    # Load A[BLOCK_M, BLOCK_K] to shared memory (implicit via tl.load)
-    # Load B[BLOCK_K, BLOCK_N] to shared memory
-    a = tl.load(a_ptr + offsets)  # Triton 自动 staging 到 shared memory
-    b = tl.load(b_ptr + offsets)
-    acc += tl.dot(a, b)
-
-# A 的每个元素现在被复用 BLOCK_N/1 次（但对 N 维的所有计算都用到同一个 A tile）
-# 实际上: shared memory 的存在让 A tile 的每个元素在计算
-# C[BLOCK_M, BLOCK_N] tile 时被使用了 BLOCK_N 次（每个 C 列一次）
-```
+$$
+\begin{aligned}
+&\text{\# Tiled: 先把数据搬到 shared memory} \\
+&\textbf{for } k = 0 \textbf{ to } K \textbf{ step } BLOCK\_K \textbf{:} \\
+&\qquad \text{\# Load } A[BLOCK\_M, BLOCK\_K] \text{ to shared memory (implicit via } tl.load) \\
+&\qquad \text{\# Load } B[BLOCK\_K, BLOCK\_N] \text{ to shared memory} \\
+&\qquad a = \text{load}(a\_ptr + offsets) \quad \text{(Triton 自动 staging 到 shared memory)} \\
+&\qquad b = \text{load}(b\_ptr + offsets) \\
+&\qquad acc \mathrel{+}= \text{dot}(a, b) \\
+&\\
+&\text{A 的每个元素现在被复用 } BLOCK\_N / 1 \text{ 次} \\
+&\text{(但对 N 维的所有计算都用到同一个 A tile)} \\
+&\text{实际上: shared memory 的存在让 A tile 的每个元素在计算} \\
+&C[BLOCK\_M, BLOCK\_N] \text{ tile 时被使用了 } BLOCK\_N \text{ 次（每个 C 列一次）}
+\end{aligned}
+$$
 
 ### 1.3 量化收益
 
-```
-以 (BLOCK_M=128, BLOCK_N=128, BLOCK_K=32) 为例:
-
-Naive HBM 访问（一个 C tile）:
-  for each k in K/BLOCK_K:  # K=4096 → 128 iterations
-    读 A: 128×32 = 4096 elements × 2 bytes = 8 KB
-    读 B: 32×128 = 4096 elements × 2 bytes = 8 KB
-  总 = 128 × (8+8) = 2048 KB per C tile
-
-Tiled HBM 访问:
-  同样: 2048 KB per C tile（加载到 shared memory 是一样的）
-  BUT: 从 shared memory 读取的带宽是 HBM 的 ~10×
-
-  所以实际加速来自:
-  1. 更低的延迟（shared memory 20-30 cycles vs HBM 500 cycles）
-  2. 更高的带宽（shared memory 更高 BW）
-  3. A tile 在 shared memory 中被 K 维循环反复使用
-     - 对于整个 K 维循环: 数据只加载一次到 shared memory
-     - 之后的每次 K 迭代: 新数据覆盖旧的 shared memory
-```
+$$
+\begin{aligned}
+&\text{以 } (BLOCK\_M=128, BLOCK\_N=128, BLOCK\_K=32) \text{ 为例:} \\
+\\
+&\textbf{Naive HBM 访问（一个 C tile）:} \\
+&\qquad \text{for each } k \text{ in } K / BLOCK\_K: \quad (K=4096 \to 128 \text{ iterations}) \\
+&\qquad \qquad \text{读 A: } 128 \times 32 = 4096 \text{ elements} \times 2 \text{ bytes} = 8 \text{ KB} \\
+&\qquad \qquad \text{读 B: } 32 \times 128 = 4096 \text{ elements} \times 2 \text{ bytes} = 8 \text{ KB} \\
+&\qquad \text{总 } = 128 \times (8 + 8) = 2048 \text{ KB per C tile} \\
+\\
+&\textbf{Tiled HBM 访问:} \\
+&\qquad \text{同样: } 2048 \text{ KB per C tile（加载到 shared memory 是一样的）} \\
+&\qquad \text{BUT: 从 shared memory 读取的带宽是 HBM 的 } \sim 10\times \\
+\\
+&\text{所以实际加速来自:} \\
+&\qquad 1.\ \text{更低的延迟（shared memory 20--30 cycles vs HBM 500 cycles）} \\
+&\qquad 2.\ \text{更高的带宽（shared memory 更高 BW）} \\
+&\qquad 3.\ \text{A tile 在 shared memory 中被 K 维循环反复使用} \\
+&\qquad \qquad -\ \text{对于整个 K 维循环: 数据只加载一次到 shared memory} \\
+&\qquad \qquad -\ \text{之后的每次 K 迭代: 新数据覆盖旧的 shared memory}
+\end{aligned}
+$$
 
 ---
 
@@ -99,7 +104,6 @@ Tiled HBM 访问:
 
 ### 2.1 概念
 
-```
 基础 tiling (BLOCK_M=128, BLOCK_N=128):
   每个 block 的 8 个 warp 共享这个 C tile
   每个 warp 负责 C tile 的一部分
@@ -116,7 +120,6 @@ Warp Tiling (BLOCK_M=128, BLOCK_N=128, warp_tile_M=64, warp_tile_N=64):
   - 每个 warp 有更多独立计算 → 减少 warp 间同步
   - 更大的 warp tile → 更好的 Tensor Core 利用率
   - 每个 warp 可以在自己的 tile 上连续做 MMA
-```
 
 ### 2.2 在 Triton 中实现 Warp Tiling
 
@@ -204,25 +207,27 @@ def matmul_kernel(..., BLOCK_M, BLOCK_N, BLOCK_K):
 
 ### 4.1 问题
 
-```
-默认 grid 调度:
-  假设 M=4096, N=4096, BLOCK_M=128, BLOCK_N=128
-  num_pid_m = 32, num_pid_n = 32
-  
-  默认调度: pid = pid_m × num_pid_n + pid_n  (row-major)
-  pid=0:  (pid_m=0,  pid_n=0)   → C[0:128, 0:128]
-  pid=1:  (pid_m=0,  pid_n=1)   → C[0:128, 128:256]
-  ...
-  pid=32: (pid_m=1,  pid_n=0)   → C[128:256, 0:128]
-  
-  问题: 相邻 pid 处理同一 A 行但不同 B 列
-    B 列不同 → B tile 在内存中连续 → L2 友好（无需担心）
-    但 A tile: pid=0..31 都用 A[0:128, :] — 反复从 HBM 加载！
-    
-  好的做法: 让相邻 pid 处理同一 A tile
-  → pid=0: C[0:128, 0:128]   用 A[0:128, :]
-  → pid=1: C[0:128, 256:384]  也用 A[0:128, :]  ← A tile 复用！
-```
+$$
+\begin{aligned}
+&\text{默认 grid 调度:} \\
+&\qquad \text{假设 } M=4096, N=4096, BLOCK\_M=128, BLOCK\_N=128 \\
+&\qquad \text{num\_pid\_m = 32},\ \text{num\_pid\_n = 32} \\
+\\
+&\text{默认调度: } pid = pid\_m \times num\_pid\_n + pid\_n \quad (\text{row-major}) \\
+&\qquad pid=0: (pid\_m=0, pid\_n=0) \to C[0:128, 0:128] \\
+&\qquad pid=1: (pid\_m=0, pid\_n=1) \to C[0:128, 128:256] \\
+&\qquad \dots \\
+&\qquad pid=32: (pid\_m=1, pid\_n=0) \to C[128:256, 0:128] \\
+\\
+&\text{问题: 相邻 pid 处理同一 A 行但不同 B 列} \\
+&\qquad \text{B 列不同} \to \text{B tile 在内存中连续} \to \text{L2 友好（无需担心）} \\
+&\qquad \text{但 A tile: } pid=0..31 \text{ 都用 } A[0:128, :] \text{ — 反复从 HBM 加载！} \\
+\\
+&\text{好的做法: 让相邻 pid 处理同一 A tile} \\
+&\qquad \to pid=0: C[0:128, 0:128] \text{ 用 } A[0:128, :] \\
+&\qquad \to pid=1: C[0:128, 256:384] \text{ 也用 } A[0:128, :] \leftarrow \text{A tile 复用！}
+\end{aligned}
+$$
 
 ### 4.2 GROUP_M 的解决方案
 
@@ -262,7 +267,6 @@ def matmul_kernel(..., GROUP_M: tl.constexpr):
 
 ### 4.3 GROUP_M 的收益
 
-```
 GROUP_M=1 (默认): 
   L2 cache 命中率 ~30-40%
 
@@ -276,7 +280,6 @@ GROUP_M=8:
   
 小规模 (M<256): GROUP_M 意义不大，L2 容量足够
 超大规模 (M>16384): GROUP_M 帮助有限，每个 A tile 只被少量 pid 复用
-```
 
 ---
 
@@ -284,14 +287,12 @@ GROUP_M=8:
 
 ### 5.1 问题
 
-```
 标准 tiling: grid 沿 M 和 N 维度并行
   grid = (num_pid_m, num_pid_n)
   
   问题: 如果 K 很大 (K > 16384), K 维循环很长
   所有 pid 都要遍历完整的 K 维 → 每个 pid 工作时间长
   → 如果 pid 不多 (M/N 很小), GPU 上很多 SM 空闲
-```
 
 ### 5.2 Split-K 的解决方案
 
@@ -323,7 +324,6 @@ tl.atomic_add(c_ptr + offsets, acc, mask=mask)
 
 ### 6.1 问题
 
-```
 普通 kernel: 每个 block 处理一个 tile
   block 数量 = num_pid_m × num_pid_n
   
@@ -333,10 +333,12 @@ tl.atomic_add(c_ptr + offsets, acc, mask=mask)
 Persistent kernel:
   固定数量的 block (如 num_SMs)，每个 block 持续 grab 下一个 tile:
   
+  ```
   while True:
     tile_idx = atomic_add(&global_counter, 1)  # 取下一个 tile
     if tile_idx >= total_tiles: break
     compute_tile(tile_idx)
+  ```
   
   好处: 
   - 只有一次 launch
@@ -345,13 +347,11 @@ Persistent kernel:
   缺点:
   - 需要 atomic 操作
   - 不再有 autotuner 的 grid-level 便利
-```
 
 ---
 
 ## 7. 实战：Triton GEMM 的调优顺序
 
-```
 1. 先让 naive 版跑通                        ← 验证正确性
 2. 加 shared memory tiling                  ← ~2-3× 提升
 3. 加 autotune (BLOCK_M, BLOCK_N, BLOCK_K)  ← ~1.5-2× 提升
@@ -362,7 +362,6 @@ Persistent kernel:
 8. 微调 BLOCK 尺寸到 GPU 特性              ← ~1.05-1.1× 提升
 
 预期最终性能: 70-80% cuBLAS ← 对 Triton 来说已经很好
-```
 
 ---
 

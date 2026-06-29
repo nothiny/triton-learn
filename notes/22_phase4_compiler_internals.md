@@ -1,4 +1,4 @@
-# 23 — Triton 编译器内部机制深度
+# 22 — Triton 编译器内部机制深度
 
 > 深入 `@triton.jit` 的内部：AST 解析、lowering 全流程追踪、software pipelining、寄存器分配、autotuner 原理、PTX→SASS。
 > 配合 `phase4_compiler/14-21` 教程系列。
@@ -7,7 +7,7 @@
 
 ## 0. 前言：你已经知道什么，这笔记新增什么
 
-**已有笔记覆盖**（`03_triton_compiler_pipeline.md` + `13_triton_internals.md`）：
+**已有笔记覆盖**（`21_triton_compiler_pipeline.md` + `20_triton_internals.md`）：
 - 4 层 IR 管线（TTIR→TTGIR→LLVM→PTX）
 - Layout encoding 系统的基础
 - Pass 总览和关键 pass
@@ -149,7 +149,7 @@ mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32
 
 ### Stage 6: SASS (ptxas)
 
-```
+```asm
 HMMA.16816.F32.F16.F16.F32 R0, R2, R4, R0;
 ```
 
@@ -271,7 +271,7 @@ cuobjdump -sass *.cubin | grep "STL\|LDL"
 
 ### 5.1 本质：Grid Search，不是 AI
 
-```
+```python
 @triton.autotune(
     configs=[
         triton.Config({"BLOCK": 128}, num_warps=4),
@@ -368,15 +368,9 @@ grep "R[0-9]" kernel.sass | sort -u | wc -l  # 物理寄存器数
 
 ### 6.3 关键：SASS 中的 Spill
 
-```
-PTX 显示需要 128 个虚拟寄存器 → ptxas 分配时发现物理寄存器只有 96 个可用
-→ 把 32 个值溢出到 local memory (stack)
-→ SASS 中出现 STL (store local) 和 LDL (load local)
-→ 每条 STL/LDL 增加 ~100-200 cycles
-→ 性能大幅下降
+PTX 显示需要 128 个虚拟寄存器 → ptxas 分配时发现物理寄存器只有 96 个可用 → 把 32 个值溢出到 local memory (stack) → SASS 中出现 `STL` (store local) 和 `LDL` (load local) → 每条 `STL`/`LDL` 增加 ~100-200 cycles → 性能大幅下降
 
 PTX 中看不到 spill → 只有看 SASS 才能确认真正的寄存器分配结果
-```
 
 ---
 

@@ -1,4 +1,4 @@
-# 18 — 数值精度选择指南：fp32, fp16, bf16, tf32, fp8
+# 03 — 数值精度选择指南：fp32, fp16, bf16, tf32, fp8
 
 > 选择正确的数据类型是 GPU kernel 性能优化的第一步。选错了 → 精度不够或性能浪费。这篇整理各种 dtype 的特性、适用场景和常见坑。
 
@@ -8,12 +8,11 @@
 
 ### 1.1 位宽和表示范围
 
-```
-fp32 (float32):  1 sign + 8 exponent + 23 mantissa = 32 bits
+fp32 (float32): 1 sign + 8 exponent + 23 mantissa = 32 bits
   范围: ±3.4×10³⁸, 精度: ~7 位十进制
   用于: 模型权重、优化器状态、需要高精度的场景
 
-fp16 (float16):  1 sign + 5 exponent + 10 mantissa = 16 bits
+fp16 (float16): 1 sign + 5 exponent + 10 mantissa = 16 bits
   范围: ±65504, 精度: ~3.3 位十进制
   用于: GEMM 输入、activation（吞吐翻倍 vs fp32）
 
@@ -21,11 +20,10 @@ bf16 (bfloat16): 1 sign + 8 exponent + 7 mantissa = 16 bits
   范围: ±3.4×10³⁸ (同 fp32!), 精度: ~2 位十进制
   用于: 训练（范围大，不会溢出；精度低但训练可容忍）
 
-tf32:            1 sign + 8 exponent(FROM fp32) + 10 mantissa(FROM fp16)
+tf32: 1 sign + 8 exponent (FROM fp32) + 10 mantissa (FROM fp16)
   范围: 同 fp32, 精度: ~3.3 位十进制
   用于: A100+ Tensor Core 的默认 fp32 模式
   无需代码改动 — 硬件自动转换
-```
 
 ### 1.2 可视化
 
@@ -36,12 +34,12 @@ fp32:  [---可以表达极小的数 (2^-126) -----------可以表达极大的数
 bf16:  [---同 fp32 的范围————————————————————————————精度低 2 位——————————————]
 fp16:  [---范围小 (max 65504)---但精度比 bf16 高——————————  ]
 tf32:  [---同 fp32 的范围 (8-bit exp)——精度同 fp16 (10-bit mant)————]
+```
 
 精度对比 (能区分的最小差值):
 fp32:  1.0000000 和 1.0000001 → 能区分
 fp16:  1.000 和 1.001 → 能区分
 bf16:  1.00 和 1.01 → 能区分 (只有 2 位十进制精度！)
-```
 
 ---
 
@@ -63,24 +61,26 @@ bf16:  1.00 和 1.01 → 能区分 (只有 2 位十进制精度！)
 
 ### 2.2 为什么 GEMM 用 fp16 输入但 fp32 累加？
 
-```
-GEMM: C = A @ B  (所有矩阵 fp16)
-
-如果全程 fp16:
-  C[0,0] = Σ A[0,k] * B[k,0]
-  
-  问题: 当 K 很大时（如 K=4096），累加 4096 个 fp16 值
-  fp16 只有 ~3 位十进制精度
-  → 大量小值的累加会被截断
-  → 最终结果损失 1-2 位有效数字
-
-解决: 输入/输出 fp16，累加器 fp32
-  acc = Σ A[0,k] * B[k,0]  ← 每次乘加在 fp32 中进行
-  C[0,0] = fp16(acc)       ← 只在最后截断一次
-
-  fp32 有 ~7 位十进制精度
-  → 累积 K=4096 次不会有可感知的精度损失
-```
+$$
+\begin{aligned}
+&\text{GEMM: } C = AB \text{ (所有矩阵 fp16)} \\
+\\
+&\text{如果全程 fp16:} \\
+&C[0,0] = \sum_{k} A[0,k] \cdot B[k,0] \\
+\\
+&\text{问题: 当 } K \text{ 很大时（如 } K=4096 \text{），累加 4096 个 fp16 值} \\
+&\text{fp16 只有 } \sim 3 \text{ 位十进制精度} \\
+&\rightarrow \text{大量小值的累加会被截断} \\
+&\rightarrow \text{最终结果损失 1-2 位有效数字} \\
+\\
+&\text{解决: 输入/输出 fp16，累加器 fp32} \\
+&\text{acc} = \sum_{k} A[0,k] \cdot B[k,0] \leftarrow \text{每次乘加在 fp32 中进行} \\
+&C[0,0] = \text{fp16(acc)} \leftarrow \text{只在最后截断一次} \\
+\\
+&\text{fp32 有 } \sim 7 \text{ 位十进制精度} \\
+&\rightarrow \text{累积 } K=4096 \text{ 次不会有可感知的精度损失}
+\end{aligned}
+$$
 
 ---
 
@@ -88,7 +88,6 @@ GEMM: C = A @ B  (所有矩阵 fp16)
 
 ### 3.1 比较
 
-```
 fp16:
   优点: 精度比 bf16 高（3.3 vs 2 位十进制）
   缺点: 范围小（max 65504）→ 容易溢出！
@@ -104,7 +103,6 @@ bf16:
   训练: bf16 越来越流行（A100+, H100 支持）
         省去了 gradient scaling 的复杂性和调参
   推理: fp16 通常足够（范围不会成为问题）
-```
 
 ### 3.2 Gradient Scaling（fp16 训练必需）
 
@@ -140,7 +138,6 @@ scaler.update()  # 动态调整 scale factor
 
 ### 4.1 什么是 tf32？
 
-```
 A100 引入的 TensorFloat-32:
   当你在 A100 上用 torch.matmul(fp32_a, fp32_b):
   A100 自动在内部用 tf32 做 MMA:
@@ -152,7 +149,6 @@ A100 引入的 TensorFloat-32:
 
   结果: 8× faster than fp32 CUDA Core, without code change
   精度: 介于 fp16 和 fp32 之间（约 3-4 位十进制）
-```
 
 ### 4.2 控制和检查
 
@@ -180,7 +176,6 @@ with torch.backends.cuda.sdp_kernel(
 
 ### 5.1 两种格式的用途
 
-```
 E4M3 (4 exponent, 3 mantissa):
   范围: ±448
   精度: ~1 位十进制
@@ -190,28 +185,27 @@ E5M2 (5 exponent, 2 mantissa):
   范围: ±57344
   精度: ~0.6 位十进制
   用于: 反向（梯度范围更大但精度要求低）
-```
 
 ### 5.2 Block-wise Scaling
 
-```
-直接用 fp8 精度不够？— 加 scaling:
+$$
+\begin{aligned}
+&\text{直接用 fp8 精度不够？— 加 scaling:} \\
+\\
+&\text{原始 (fp16): } [0.01, 0.02, 0.03, 100.0, 200.0, 300.0] \leftarrow \text{动态范围大} \\
+\\
+&\text{直接量化到 fp8: } [0.01, 0.02, 0.03, 100, 200, 300] \rightarrow \text{前面 3 个被截断为 0！} \\
+\\
+&\text{Block-wise scaling:} \\
+&\text{分成两个 block:} \\
+&\text{Block 0: } [0.01, 0.02, 0.03] \rightarrow \text{scale}=256 \rightarrow [2.56, 5.12, 7.68] \\
+&\text{Block 1: } [100, 200, 300] \rightarrow \text{scale}=1 \rightarrow [100, 200, 300] \\
+\\
+&\text{每个 block 独立 scale} \rightarrow \text{小值不被截断！}
+\end{aligned}
+$$
 
-原始 (fp16):
-  [0.01, 0.02, 0.03, 100.0, 200.0, 300.0]  ← 动态范围大
-
-直接量化到 fp8:
-  [0.01, 0.02, 0.03, 100, 200, 300]  → 前面 3 个被截断为 0！
-
-Block-wise scaling:
-  分成两个 block:
-  Block 0: [0.01, 0.02, 0.03] → scale=256 → [2.56, 5.12, 7.68]
-  Block 1: [100, 200, 300]    → scale=1   → [100, 200, 300]
-  
-  每个 block 独立 scale → 小值不被截断！
-
-  Triton 3.x 支持: tl.dot 接受 scale_a, scale_b 参数
-```
+Triton 3.x 支持: tl.dot 接受 scale_a, scale_b 参数
 
 ---
 
@@ -219,7 +213,6 @@ Block-wise scaling:
 
 ### 6.1 不同精度在 H100 上的吞吐
 
-```
 数据搬运:
   fp16/bf16: 2 bytes → 带宽占用少
   fp32:      4 bytes → 2× 带宽占用
@@ -235,11 +228,9 @@ Block-wise scaling:
   bf16: 1.0×
   tf32: 0.5× (half the ops per cycle, but 8× faster than fp32 CUDA)
   fp32: 0.0625× (on CUDA Core — no Tensor Core for fp32)
-```
 
 ### 6.2 精度损失的量化
 
-```
 以 GEMM (M=N=K=4096) 为例:
 
 fp32 reference:      1.000000 (baseline)
@@ -251,7 +242,6 @@ int8:                0.995    (relative error ~5e-3)
 对于训练: bf16 + fp32 accumulation → 通常和 fp32 的收敛行为相同
 对于推理: fp16 → 通常足够
 对于量化推理: fp8/int8 → 有轻微质量损失, 但 2-4× 速度提升
-```
 
 ---
 
@@ -310,7 +300,6 @@ with torch.cuda.amp.autocast(dtype=torch.float16):
 
 ## 8. 总结：选择 dtype 的决策树
 
-```
 你需要什么？
 
 1. 纯计算（GEMM, conv）
@@ -334,7 +323,6 @@ Golden rule:
   内存密集型 kernel: 优先用 fp16/bf16 (减少 2× 带宽)
   计算密集型 kernel: 优先用 fp16/bf16 (Tensor Core 2× 吞吐)
   精度敏感的 kernel: 用 fp32 (或 tf32)
-```
 
 ---
 

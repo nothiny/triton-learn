@@ -1,4 +1,4 @@
-# 27 — IR 级性能调试方法论
+# 26 — IR 级性能调试方法论
 
 > 从"kernel 慢"到"找到根因"的系统化流程——4 种常见问题的 IR 诊断方法。
 > 配合 `phase4_compiler/11_debugging_with_ir.py` 和 `19_env_vars.py`。
@@ -282,7 +282,6 @@ x = tl.load(ptr + offs_n[:, None] * stride + offs_m[None, :])
 
 ## 9. 总结
 
-```
 性能诊断的黄金法则: 看 IR，不要猜。
 
 4 个最常见问题:
@@ -293,4 +292,3 @@ x = tl.load(ptr + offs_n[:, None] * stride + offs_m[None, :])
 
 每次性能异常:
   → Dump IR → 按症状对照上表 → 找到问题 → 修复 → Dump 验证
-```

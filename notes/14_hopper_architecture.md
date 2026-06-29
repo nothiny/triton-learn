@@ -1,4 +1,4 @@
-# 10 — Hopper (H100) 架构：新一代 GPU 的新能力
+# 14 — Hopper (H100) 架构：新一代 GPU 的新能力
 
 > H100 相比 A100 不是简单的"更快"，而是引入了多项**新的硬件能力**。理解这些是写出 Hopper-optimized kernel 的前提。
 
@@ -25,7 +25,6 @@
 
 ### 2.1 问题：老 MMA 的限制
 
-```
 A100 的 mma.sync:
   一个 warp (32 threads) 协作做 M=16, N=8, K=16 的 MMA
   更大 tile 需要分解为多个 MMA 调用
@@ -38,7 +37,6 @@ H100 的 wgmma:
   - 更大的 tile → 更好的数据复用
   - 更少的同步开销（4 warps 一起同步，而非多次单独同步）
   - 异步执行（wgmma 和普通指令可以重叠）
-```
 
 ### 2.2 可视化
 
@@ -62,12 +60,10 @@ H100 wgmma (一个 warp group 128 threads):
 
 ### 2.3 在 Triton 中的状态
 
-```
 Triton 3.x: 部分支持 wgmma
   - tl.dot 在某些 layout 下会生成 wgmma
   - 但不暴露 wgmma 的全部控制参数
   - 这是为什么 H100 上 Triton 的 GEMM 还没达到 cuBLAS 级别的原因之一
-```
 
 ---
 
@@ -75,7 +71,6 @@ Triton 3.x: 部分支持 wgmma
 
 ### 3.1 TMA 是什么？
 
-```
 旧方案 (cp.async, A100):
   每个 warp 发出 cp.async 指令 — 异步 global→shared 拷贝
   问题:
@@ -91,11 +86,9 @@ TMA (H100):
   - 自动做边界处理（越界元素自动设 0）
   - 完全不占用计算资源（独立的硬件单元）
   - 支持多维: 1D, 2D, 3D, 4D, 5D tile copy
-```
 
 ### 3.2 TMA 的工作原理
 
-```
 传统 copy:
   for each thread:
     compute address = base + i*stride0 + j*stride1
@@ -112,17 +105,14 @@ TMA copy:
     global_extent, // [4096, 4096] — 全局 tensor 的边界
   )
   // 1 个硬件请求 → 硬件自动完成地址计算、边界处理、数据搬运
-```
 
 ### 3.3 在 Triton 中的状态
 
-```
 Triton 3.x: 实验性支持
   - 需要手动设置 TRITON_ENABLE_TMA=1
   - 不是所有 tl.load 都能生成 TMA
   
   Triton 的未来版本会更好地集成 TMA，但目前仍然是实验性的。
-```
 
 ---
 
@@ -130,7 +120,6 @@ Triton 3.x: 实验性支持
 
 ### 4.1 概念
 
-```
 A100:
   Thread Block 是最大的协作单元
   Block 之间只能用 global memory 通信（慢）
@@ -143,11 +132,9 @@ H100:
   - 直接访问其他 block 的 shared memory
   
   好处: 可以处理更大的 tile，而无需全部回到 global memory
-```
 
 ### 4.2 Distributed Shared Memory
 
-```
 传统:
   Block 0: shared memory [0...228KB]
   Block 1: shared memory [0...228KB]  ← 两个独立的空间
@@ -157,14 +144,11 @@ Cluster (H100):
     Block 0 可以直接读 Block 1 的 shared memory（通过硬件 interconnect）
     → 相当于一个虚拟的 4×228KB = 912KB 的 shared memory
     → 但访问其他 block 的 shared memory 仍然有额外延迟
-```
 
 ### 4.3 在 Triton 里
 
-```
 Triton 目前还没有 Thread Block Cluster 的抽象。
 这是未来可能加入的特性。
-```
 
 ---
 
@@ -172,36 +156,32 @@ Triton 目前还没有 Thread Block Cluster 的抽象。
 
 ### 5.1 两种 FP8 格式
 
-```
-E4M3 (更精确):
-  1 sign + 4 exponent + 3 mantissa = 8 bits
-  范围: ±448, 最小正数: 2^-6 ≈ 0.016
-  用于: 前向计算
-
-E5M2 (更大范围):
-  1 sign + 5 exponent + 2 mantissa = 8 bits
-  范围: ±57344, 最小正数: 2^-14 ≈ 0.00006
-  用于: 反向传播（梯度范围大但精度要求低）
-```
+$$
+\begin{aligned}
+\text{E4M3 (更精确):} &\quad 1\text{ sign} + 4\text{ exponent} + 3\text{ mantissa} = 8\text{ bits} \\
+&\quad \text{范围: } \pm 448,\ \text{最小正数: } 2^{-6} \approx 0.016 \\
+&\quad \text{用于: 前向计算} \\[4pt]
+\text{E5M2 (更大范围):} &\quad 1\text{ sign} + 5\text{ exponent} + 2\text{ mantissa} = 8\text{ bits} \\
+&\quad \text{范围: } \pm 57344,\ \text{最小正数: } 2^{-14} \approx 0.00006 \\
+&\quad \text{用于: 反向传播（梯度范围大但精度要求低）}
+\end{aligned}
+$$
 
 ### 5.2 Block-wise Scaling
 
-```
-直接用 FP8 做 GEMM 的精度不够（只有 1-3 位十进制有效数字）。
-解决方案: 每个 block 乘以一个 scaling factor:
-
-  原始数据（fp16）→ 量化（per-block scaling）→ fp8
-  GEMM in fp8 → 输出 × scale_A × scale_B → 恢复精度
-
-  H100 的 FP8 MMA 自带 scaling:
-  D = (A_fp8 × scale_A) @ (B_fp8 × scale_B) + C_fp32
-```
+$$
+\begin{aligned}
+&\text{原始数据（fp16）} \rightarrow \text{量化（per-block scaling）} \rightarrow \text{fp8} \\
+&\text{GEMM in fp8} \rightarrow \text{输出} \times \text{scale}_A \times \text{scale}_B \rightarrow \text{恢复精度} \\[4pt]
+&\text{H100 的 FP8 MMA 自带 scaling:} \\
+&D = (A_{\text{fp8}} \times \text{scale}_A) \mathbin{\text{@}} (B_{\text{fp8}} \times \text{scale}_B) + C_{\text{fp32}}
+\end{aligned}
+$$
 
 ---
 
 ## 6. H100 上 Triton 的"做不到"清单
 
-```
 下表解释了为什么 H100 上 Triton 还没有达到 cuBLAS 性能:
 
 | 能力 | A100 | H100 | Triton 3.x 支持 |
@@ -214,9 +194,8 @@ E5M2 (更大范围):
 | Warp Specialization | — | ✅ | ❌ 不支持（需 CUTILE） |
 
 结论: 在 A100 上，Triton GEMM 可以接近 cuBLAS 的 85-90%。
-       在 H100 上，由于无法使用 wgmma/TMA/warp specialization，
-       Triton 只能达到 cuBLAS 的 65-75%。
-```
+在 H100 上，由于无法使用 wgmma/TMA/warp specialization，
+Triton 只能达到 cuBLAS 的 65-75%。
 
 ---
 
@@ -224,26 +203,22 @@ E5M2 (更大范围):
 
 ### Flash Attention
 
-```
 H100 上的 Flash Attention:
-  - wgmma 可以加速 QK^T 和 PV 的 GEMM
+  - wgmma 可以加速 $QK^T$ 和 PV 的 GEMM
   - TMA 可以加速 Q/K/V tile 的加载
   - 但 Triton 无法直接使用这些...
 
   这就是为什么 flash-attn 3 (Tri Dao, 2024) 用纯 CUDA 写的
   H100 版本比 Triton 版本快 ~2×。
-```
 
 ### GEMM
 
-```
 H100 上的 GEMM:
   FP8 + wgmma + TMA + warp specialization
   理论上可以接近 80-85% of peak 989 TFLOPS
 
   Triton 能达到的: ~65-75% peak
   cuBLAS 能达到的: ~80-85% peak
-```
 
 ---
 
