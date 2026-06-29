@@ -1,122 +1,164 @@
-# 06 — 常见 Kernel 模式：Reduce、Scan、Gather、Convolution
+# 06 — 常见 Kernel 模式：Elementwise、Reduce、Scan、Gather、Conv
 
-> 除了 elementwise 和 GEMM，GPU 上还有很多常见的计算模式。这篇整理了在 Triton 中实现这些模式的惯用写法。
+> 每个模式回答三个问题：**它在 GPU 上到底做了什么**、**Triton 怎么写**、**为什么快（或慢）**。
 
 ---
 
-## 1. Reduce（归约）— 多对一的聚合
+## 1. Elementwise + Fusion — 最简单的模式，最重要的优化
 
 ### 1.1 概念
 
-Reduce: 把多个元素合并为一个（或少数几个）
-
-常见 reduce:
+Elementwise: 每个输出元素只依赖**同一位置**的输入元素。
 
 $$
-\begin{aligned}
-\text{sum}(x) &: x_1 + x_2 + \cdots + x_n \\
-\text{max}(x) &: \max(x_1, x_2, \ldots, x_n) \\
-\text{argmax}(x) &: \text{最大值的索引} \\
-\text{mean}(x) &: \frac{\text{sum}(x)}{n}
-\end{aligned}
+\text{output}[i] = f(\text{input}_1[i], \text{input}_2[i], \ldots)
 $$
 
-Reduce 的本质: "沿某个维度聚合，产出更小的结果"
+没有跨元素依赖 → 天然完美并行。GPU 上做 elementwise 唯一的瓶颈是**内存带宽**: 计算密度太低，绝大多数时间花在从 HBM 搬数据上。
 
-### 1.2 Triton 实现：Row-wise Softmax
+### 1.2 Triton 写法
 
 ```python
-# 每行独立做 softmax — 每行是一个 reduce group
 @triton.jit
-def reduce_kernel(x_ptr, out_ptr, N_COLS, BLOCK_SIZE: tl.constexpr):
-    """
-    逐行 softmax: 沿列维（dim=1）做 reduce
-    """
-    row_idx = tl.program_id(0)  # 每个 program 处理一行
-    
-    # Step 1: find max（沿列维 reduce，用 max）
-    row_max = tl.full([BLOCK_SIZE], float('-inf'), dtype=tl.float32)
-    for block_start in range(0, N_COLS, BLOCK_SIZE):
-        offsets = row_idx * N_COLS + block_start + tl.arange(0, BLOCK_SIZE)
-        mask = (block_start + tl.arange(0, BLOCK_SIZE)) < N_COLS
-        x = tl.load(x_ptr + offsets, mask=mask, other=float('-inf'))
-        row_max = tl.maximum(row_max, x)  # per-block max
-    global_max = tl.max(row_max, axis=0)  # final reduce across blocks
-    
-    # Step 2: compute sum（沿列维 reduce，用 sum）
-    row_sum = tl.zeros([BLOCK_SIZE], dtype=tl.float32)
-    for block_start in range(0, N_COLS, BLOCK_SIZE):
-        offsets = row_idx * N_COLS + block_start + tl.arange(0, BLOCK_SIZE)
-        mask = (block_start + tl.arange(0, BLOCK_SIZE)) < N_COLS
-        x = tl.load(x_ptr + offsets, mask=mask, other=float('-inf'))
-        row_sum += tl.exp(x - global_max)
-    global_sum = tl.sum(row_sum, axis=0)
-    
-    # Step 3: normalize + write
-    for block_start in range(0, N_COLS, BLOCK_SIZE):
-        offsets = row_idx * N_COLS + block_start + tl.arange(0, BLOCK_SIZE)
-        mask = (block_start + tl.arange(0, BLOCK_SIZE)) < N_COLS
-        x = tl.load(x_ptr + offsets, mask=mask, other=float('-inf'))
-        result = tl.exp(x - global_max) / global_sum
-        tl.store(out_ptr + offsets, result, mask=mask)
-
-# [COMPILER] tl.max(x, axis=0) 编译为:
-# 1. warp shuffle reduction (fast, in-register)
-# 2. shared memory reduction (cross-warp, slower)
+def gelu_kernel(x_ptr, out_ptr, N, BLOCK_SIZE: tl.constexpr):
+    pid = tl.program_id(0)
+    offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+    mask = offsets < N
+    x = tl.load(x_ptr + offsets, mask=mask)
+    # GELU: x * Φ(x), Φ 用 tanh 近似
+    out = 0.5 * x * (1.0 + tl.math.tanh(
+        0.7978845608 * (x + 0.044715 * x * x * x)))
+    tl.store(out_ptr + offsets, out, mask=mask)
 ```
 
-### 1.3 Reduce 的性能要点
+就这么简单。`grid = (cdiv(N, BLOCK_SIZE),)` — 每个 program 处理一个 chunk。
 
-1. Reduce 通常是 memory-bound（很少 FLOPs per element）
-   → 优化方向: 减少 HBM 遍历次数
+### 1.3 关键洞察：Fusion 才是价值所在
 
-2. tl.sum(axis=0) 跨 block 需要 shared memory
-   → BLOCK_SIZE 太大意味着更多 reduce 开销
+单独写一个 elementwise kernel 意义不大——PyTorch 已经够快。**价值在于把多个 op 融合成一个 kernel，消除中间 HBM 往返。**
 
-3. 对于大 reduction，可以考虑:
-   - 多级 reduce（block-level → warp-level）
-   - 使用 shared memory 缓存中间结果
-   - 与后续 op 融合（如 fused softmax）
+```
+没有 fusion（3 次 kernel launch）:
+  HBM → reg → HBM   (gelu)
+          HBM → reg → HBM   (dropout)
+                  HBM → reg → HBM   (add residual)
+
+有 fusion（1 次 kernel launch）:
+  HBM → reg → (gelu → dropout → add) → reg → HBM
+                 ↑── 全部在寄存器里完成 ──↑
+```
+
+典型融合场景：
+- **Activation + Dropout + Residual**: Transformer 的 FFN 里每个 sub-layer 都用
+- **LayerNorm + 后续 op**: LN 的统计量（mean, var）已经在寄存器里，直接接着算
+- **AdamW 的 weight decay**: `w = w * (1 - lr * weight_decay)` — 纯 elementwise，但必须单独写因为 PyTorch 没有这个 op
+
+性能预期：memory-bound 的 elementwise 融合后，节省的 HBM 带宽直接转化为加速比——**2-3× 是常见的**。
 
 ---
 
-## 2. Scan（扫描）— 从 Blelloch 算法到 Triton 实现
+## 2. Reduce — 多对一的聚合
 
-> 分三层讲：**Blelloch 算法本身**（8 步交互演示）、**Triton 编译器怎么实现它**（warp shuffle + shared memory）、**你的代码为什么是错的**。
+### 2.1 概念
 
-### 2.1 概念：Scan vs Reduce
-
-**Scan (prefix sum / cumulative sum)** — 每个输出依赖它之前的所有输入:
+Reduce: 沿某个维度把多个元素聚合成一个。
 
 $$
 \begin{aligned}
-\text{Input}:&\ [a_1, a_2, a_3, a_4, a_5] \\
-\text{Output}:&\ [a_1,\ a_1 + a_2,\ a_1 + a_2 + a_3,\ a_1 + a_2 + a_3 + a_4,\ a_1 + a_2 + a_3 + a_4 + a_5]
+\text{sum}(x_1, \ldots, x_n) &= x_1 + x_2 + \cdots + x_n \\
+\text{max}(x_1, \ldots, x_n) &= \max(x_1, x_2, \ldots, x_n)
 \end{aligned}
 $$
 
-应用场景: LayerNorm 的 mean/variance、排序/基数排序、Attention 的 causal masking、beam search。
+依赖结构是 **fan-in**: 树状收拢，最终只有一个出口。
 
-**Scan 比 Reduce 难在哪？**
+### 2.2 Triton 怎么写
+
+核心 API: `tl.sum(x, axis=0)` — 对一个 vector 的所有元素求和。
+
+```python
+@triton.jit
+def row_reduce_kernel(x_ptr, out_ptr, N_ROWS, N_COLS, BLOCK_SIZE: tl.constexpr):
+    """
+    每行独立做 sum reduce。
+    一个 program 处理一行 → 沿列维 (dim=1) reduce
+    """
+    row = tl.program_id(0)
+    acc = tl.zeros([BLOCK_SIZE], dtype=tl.float32)
+
+    # 沿列维分块遍历
+    for col_start in range(0, N_COLS, BLOCK_SIZE):
+        offsets = row * N_COLS + col_start + tl.arange(0, BLOCK_SIZE)
+        mask = (col_start + tl.arange(0, BLOCK_SIZE)) < N_COLS
+        x = tl.load(x_ptr + offsets, mask=mask, other=0.0)
+        acc += x                              # [BLOCK_SIZE] → 逐元素累加
+
+    result = tl.sum(acc, axis=0)             # BLOCK_SIZE → 标量
+    tl.store(out_ptr + row, result)
+```
+
+### 2.3 `tl.sum(axis=0)` 在 GPU 上到底做了什么
+
+这是理解 reduce 性能的关键。`tl.sum(v, axis=0)` 把一个 vector 变成一个标量，编译器展开成两级:
+
+**第一级 — Warp 内 shuffle reduce（~5 轮，全在寄存器里）:**
+
+```
+stride=16: thread i += thread i+16 的值
+stride=8:  thread i += thread i+8 的值
+stride=4:  ...
+stride=2:  ...
+stride=1:  ...
+→ 32 个 thread 的值收拢到 thread 0 手里
+```
+
+`__shfl_down_sync` 延迟 ~1 cycle/轮，5 轮共 ~5 cycles。
+
+**第二级 — 跨 warp shared memory reduce:**
+
+多个 warp 的 partial 结果写 smem → `__syncthreads` → 一个 warp 对 smem 做 shuffle reduce 得到最终标量。
+
+**所以一个 `tl.sum(axis=0)` 的成本 ≈ 5 cycle (warp 内) + ~20 cycle (smem 跨 warp)。** BLOCK_SIZE 越大，跨 warp 的 smem 开销越大，但 warp 内的 5 轮是固定的。
+
+### 2.4 Reduce 的两种常见结构
+
+**Row-wise reduce** (上面例子): 每行一个标量结果。`grid = (N_ROWS,)`。每个 program 处理一个独立的 "reduce group"。
+
+**Full reduce** (全张量 → 一个标量): `grid = (1,)`，单个 program 遍历整个张量。对大张量 (>128K 元素)，kernel 耗时 >20μs → 不会成为瓶颈。对小张量 (<32K 元素)，kernel launch overhead (~5μs) 不可忽略 → 考虑和前后 op 融合。
+
+**性能定位:** Reduce 是 memory-bound——每个元素只做 ~1 次 FLOP（加法），但需要从 HBM 读一次。优化方向:
+1. **减少遍历次数**: 一次遍历同时算 sum 和 max（如 softmax 的前两遍可以合并？不行——max 必须先算完，sum 依赖 max 的稳定化）
+2. **融入 producer/consumer**: LayerNorm 里，mean/var 的 reduce 结果直接用于 normalize，不写回 HBM
+
+---
+
+## 3. Scan — 有依赖链的并行化
+
+> 这是最常被问到的模式。分三层讲：Blelloch 算法、Triton 编译器实现、常见错误。
+
+### 3.1 概念和难度
+
+**Scan (prefix sum)**: 每个输出依赖它之前的所有输入。
+
+$$
+\text{Input: } [a_1, a_2, a_3, a_4] \quad\longrightarrow\quad
+\text{Output: } [a_1,\ a_1 + a_2,\ a_1 + a_2 + a_3,\ a_1 + a_2 + a_3 + a_4]
+$$
+
+**Scan 比 Reduce 难在哪:**
 
 | | Reduce | Scan |
 |---|---|---|
-| 依赖结构 | Fan-in（收拢），只有一个出口 | Fan-out（扇出），每个输出都要所有前驱 |
-| Work complexity | O(n) | O(n log n) — Blelloch 赢在延迟，不赢在总 work |
-| Cross-warp | partial 写到 smem 合并成标量 | partial 写到 smem 后**还要写回去**（每个 thread 都要输出） |
-| Cross-block | 不需要（标量结果直接用） | **必须两个 kernel**（block sum 通过 global memory 传递） |
+| 依赖结构 | Fan-in，一个出口 | **Fan-out**，每个输出都要所有前驱 |
+| Work complexity | O(n) | O(n log n) — Blelloch 不赢在总 work，赢在延迟 |
+| Cross-warp 后 | partial 合并成标量，结束 | partial 合并后**还要写回去** |
+| Cross-block | 不需要 | **必须双 kernel**（block sum 走 global memory） |
 
----
+### 3.2 Blelloch 算法: Up-Sweep + Down-Sweep
 
-### 2.2 第一层：Blelloch 算法 — 8 步交互演示
+数据: `[3, 1, 7, 0, 4, 1, 6, 3]`。Blelloch scan 输出 **exclusive scan**: 位置 `i` 的结果 = 前 `i` 个元素的和。
 
-> 数据: `[3, 1, 7, 0, 4, 1, 6, 3]`（8 个元素，`BLOCK_SIZE=8`）
-
-Blelloch scan 分两个阶段，输出 **exclusive scan**:
-- **Up-Sweep（3 步）**: 从叶子向根构建部分和树
-- **Down-Sweep（4 步）**: 从根向叶子分发前缀和
-
-下面是二叉树视角。树中每个节点 `[i-j]` 存储它覆盖区间的部分和（up-sweep 时从下往上填，down-sweep 时从上往下修正）。
+算法在二叉树视角下最直观——up-sweep 从叶子向根填部分和，down-sweep 从根向叶子分发前缀和:
 
 ```
                     ┌──────[0-7]──────┐              ← Level 3 (root)
@@ -126,506 +168,202 @@ Blelloch scan 分两个阶段，输出 **exclusive scan**:
       ┌─[0-1]──┐   ┌─[2-3]──┐ ┌─[4-5]──┐   ┌─[6-7]──┐  ← Level 1
       │sum(0,1)│   │sum(2,3)│ │sum(4,5)│   │sum(6,7)│
       │  │     │   │  │     │ │  │     │   │  │     │
-idx:  0  1     2   3  4     5 6  7     8   9 10    11   (概念树节点编号)
-val:  3  1     7   0  4     1 6  3     ←  ←  ←  ←  ←   原始数据 (叶子)
+      3  1     7   0  4     1  6  3                          ← 叶子 = 原始数据
 ```
-
----
 
 <details>
-<summary><b>Step 1: 初始状态</b> — 叶子节点 = 原始数据</summary>
+<summary><b>Step 1-4: Up-Sweep（点击展开全部 4 步）</b></summary>
 
-只有叶子有值。内部节点尚未计算。
+**Step 1 (初始):** `[3, 1, 7, 0, 4, 1, 6, 3]`
 
-```
-                    ┌──────[0-7]──────┐
-                    │       ?         │
-           ┌────[0-3]────┐     ┌────[4-7]────┐
-           │     ?       │     │     ?       │
-      ┌─[0-1]──┐   ┌─[2-3]──┐ ┌─[4-5]──┐   ┌─[6-7]──┐
-      │   ?    │   │   ?    │ │   ?    │   │   ?    │
-      │  │     │   │  │     │ │  │     │   │  │     │
-      3  1     7   0  4     1  6  3     ←  ←  ←  ←  ←
-```
+**Step 2 (offset=1, 相邻对合并):** `x[1]+=x[0]`, `x[3]+=x[2]`, `x[5]+=x[4]`, `x[7]+=x[6]`
+→ `[3, 4, 7, 7, 4, 5, 6, 9]` — Level 1 填满
 
-数组: `[3, 1, 7, 0, 4, 1, 6, 3]`
+**Step 3 (offset=2, 跨两对合并):** `x[3]+=x[1]`, `x[7]+=x[5]`
+→ `[3, 4, 7, 11, 4, 5, 6, 14]` — Level 2 填满
+
+**Step 4 (offset=4, 跨两组合并):** `x[7]+=x[3]`
+→ `[3, 4, 7, 11, 4, 5, 6, 25]` — Root 填满 (`x[7]=25` = 总和)
 
 </details>
 
 <details>
-<summary><b>Step 2: Up-Sweep offset=1</b> — 相邻两两合并 → 填满 Level 1</summary>
+<summary><b>Step 5-8: Down-Sweep（点击展开全部 4 步）</b></summary>
 
-线程 `i` 满足 `(i+1) % 2 == 0` 的，把 `x[i-1]` 加到 `x[i]` 上。
+Down-sweep 的核心操作: swap 当前节点和左孩子，然后 propagate。
 
-```
-      ┌─[0-1]──┐   ┌─[2-3]──┐ ┌─[4-5]──┐   ┌─[6-7]──┐
-      │   4    │   │   7    │ │   5    │   │   9    │    ← Level 1 填满
-      │ ↗│     │   │ ↗│     │ │ ↗│     │   │ ↗│     │
-      3  1     7   0  4     1  6  3
-       (1+3)     (0+7)     (1+4)     (3+6)
-```
+**Step 5: 清零 Root.** `x[7] = 0` → `[3, 4, 7, 11, 4, 5, 6, 0]`
 
-- `x[1] += x[0]` → 1+3=**4**
-- `x[3] += x[2]` → 0+7=**7**
-- `x[5] += x[4]` → 1+4=**5**
-- `x[7] += x[6]` → 3+6=**9**
+**Step 6 (offset=4):** `x[3]↔x[7]`, `x[7]+=x[3]` (old) → `[3, 4, 7, 0, 4, 5, 6, 11]`
 
-数组: `[3, 4, 7, 7, 4, 5, 6, 9]`（加粗为本次变化）
+**Step 7 (offset=2):** Pair (1,3): `x[1]↔x[3]`, `x[3]+=4` → x[3]=4. Pair (5,7): `x[5]↔x[7]`, `x[7]+=5` → x[7]=16
+→ `[3, 0, 7, 4, 4, 11, 6, 16]`
+
+**Step 8 (offset=1):** 4 对 swap+propagate →
+**`[0, 3, 4, 11, 11, 15, 16, 22]`** ✓
 
 </details>
 
-<details>
-<summary><b>Step 3: Up-Sweep offset=2</b> — 跨两对合并 → 填满 Level 2</summary>
+验证: `exc_scan[5] = 15 = 3+1+7+0+4 = 前5个元素和` ✓
 
-线程 `i` 满足 `(i+1) % 4 == 0` 的，把 `x[i-2]` 加到 `x[i]` 上。
-
-```
-           ┌────[0-3]────┐     ┌────[4-7]────┐
-           │     11      │     │     14      │         ← Level 2 填满
-      ┌─[0-1]──┐   ┌─[2-3]──┐ ┌─[4-5]──┐   ┌─[6-7]──┐
-      │   4    │   │   7 ↗  │ │   5    │   │   9 ↗  │
-      3  1     7   0  4     1  6  3
-                  (7+4)            (9+5)
-```
-
-- `x[3] += x[1]` → 7+4=**11**
-- `x[7] += x[5]` → 9+5=**14**
-
-数组: `[3, 4, 7, 11, 4, 5, 6, 14]`
-
-</details>
-
-<details>
-<summary><b>Step 4: Up-Sweep offset=4</b> — 跨两组合并 → 填满 Root</summary>
-
-线程 `i` 满足 `(i+1) % 8 == 0` 的，把 `x[i-4]` 加到 `x[i]` 上。
-
-```
-                    ┌──────[0-7]──────┐
-                    │       25        │                    ← Root 填满
-           ┌────[0-3]────┐     ┌────[4-7]────┐
-           │     11      │     │     14 ↗    │
-      ┌─[0-1]──┐   ┌─[2-3]──┐ ┌─[4-5]──┐   ┌─[6-7]──┐
-      │   4    │   │   7    │ │   5    │   │   9    │
-      3  1     7   0  4     1  6  3
-                                     (14+11)
-```
-
-- `x[7] += x[3]` → 14+11=**25**（全部元素总和）
-
-数组: `[3, 4, 7, 11, 4, 5, 6, 25]`
-
-</details>
-
----
-
-**Up-Sweep 完成。** `x[7] = 25` = 全部元素总和。树中每个内部节点 `[i-j]` 都存在其覆盖区间内**某个位置**: 节点 `[0-3]→x[3]=11`, 节点 `[0-7]→x[7]=25`。
-
----
-
-<details>
-<summary><b>Step 5: 清零 Root</b> — 准备 Down-Sweep</summary>
-
-Down-Sweep 之前先把 `x[7]` 清零。这个 0 将向下传播。
-
-```
-                    ┌──────[0-7]──────┐
-                    │       0         │                    ← Root 清零
-           ┌────[0-3]────┐     ┌────[4-7]────┐
-           │     11      │     │     14      │
-      ┌─[0-1]──┐   ┌─[2-3]──┐ ┌─[4-5]──┐   ┌─[6-7]──┐
-      │   4    │   │   7    │ │   5    │   │   9    │
-      3  1     7   0  4     1  6  3
-```
-
-- `x[7] = 0`
-
-数组: `[3, 4, 7, 11, 4, 5, 6, 0]`
-
-</details>
-
-<details>
-<summary><b>Step 6: Down-Sweep offset=4</b> — Root 向 Level 2 分发</summary>
-
-线程 `i` 满足 `(i+1) % 8 == 0` 的，swap 并 propagate:
-- `tmp = x[i-4]`, `x[i-4] = x[i]`, `x[i] += tmp`
-
-```
-                    ┌──────[0-7]──────┐
-                    │       0         │
-           ┌────[0-3]────┐     ┌────[4-7]────┐
-           │  0  │       │     │  11  │       │           ← [0-3]清零, [4-7]=11
-      ┌─[0-1]──┐   ┌─[2-3]──┐ ┌─[4-5]──┐   ┌─[6-7]──┐
-      │   4    │   │   7    │ │   5    │   │   9    │
-      3  1     7   0  4     1  6  3
-      ↑                   ↑
-  x[3]=0              x[7]=11
-```
-
-- `tmp = x[3] = 11` → `x[3] = x[7] = 0` → `x[7] = 0 + 11 = 11`
-
-含义: `x[7]` 现在是 `[0-3]` 区间和(11) + 0，即 exc_scan 中 index 7 的前缀和。
-
-数组: `[3, 4, 7, 0, 4, 5, 6, 11]`
-
-</details>
-
-<details>
-<summary><b>Step 7: Down-Sweep offset=2</b> — Level 2 向 Level 1 分发</summary>
-
-线程 `i` 满足 `(i+1) % 4 == 0` 的，swap 并 propagate。
-
-```
-           ┌────[0-3]────┐     ┌────[4-7]────┐
-           │  0  │       │     │  11  │       │
-      ┌─[0-1]──┐   ┌─[2-3]──┐ ┌─[4-5]──┐   ┌─[6-7]──┐
-      │ 0 │    │   │ 4 │    │ │11 │    │   │16 │    │    ← Level 1 更新
-      3  1     7   0  4     1  6  3
-      ↑       ↑      ↑       ↑
-    x[1]=0  x[3]=4  x[5]=11 x[7]=16
-```
-
-- Pair 1: `tmp=x[1]=4` → `x[1]=x[3]=0` → `x[3]=0+4=4`
-- Pair 2: `tmp=x[5]=5` → `x[5]=x[7]=11` → `x[7]=11+5=16`
-
-数组: `[3, 0, 7, 4, 4, 11, 6, 16]`
-
-</details>
-
-<details>
-<summary><b>Step 8: Down-Sweep offset=1</b> — Level 1 向叶子分发 → 完成！</summary>
-
-线程 `i` 满足 `(i+1) % 2 == 0` 的，swap 并 propagate。
-
-```
-      ┌─[0-1]──┐   ┌─[2-3]──┐ ┌─[4-5]──┐   ┌─[6-7]──┐
-      │ 0 │ 3  │   │ 4 │11  │ │11 │15  │   │16 │22  │    ← 叶子得到最终值
-      0  3     4   11 11 15  16 22                         ← exclusive scan 结果
-```
-
-- `x[0]↔x[1]`: `x[0]=0, x[1]=3`
-- `x[2]↔x[3]`: `x[2]=4, x[3]=11`
-- `x[4]↔x[5]`: `x[4]=11, x[5]=15`
-- `x[6]↔x[7]`: `x[6]=16, x[7]=22`
-
-**最终结果（exclusive scan）: `[0, 3, 4, 11, 11, 15, 16, 22]`**
-
-</details>
-
----
-
-**验证:** 对原始输入 `[3,1,7,0,4,1,6,3]`
-
-| i | exc_scan[i] | 含义 | 验证 |
-|---|---|---|---|
-| 0 | 0 | 前 0 个元素的和 | 0 ✓ |
-| 1 | 3 | 前 1 个元素的和 | 3 ✓ |
-| 2 | 4 | 前 2 个元素的和 | 3+1=4 ✓ |
-| 3 | 11 | 前 3 个元素的和 | 3+1+7=11 ✓ |
-| 4 | 11 | 前 4 个元素的和 | 3+1+7+0=11 ✓ |
-| 5 | 15 | 前 5 个元素的和 | 3+1+7+0+4=15 ✓ |
-| 6 | 16 | 前 6 个元素的和 | 3+1+7+0+4+1=16 ✓ |
-| 7 | 22 | 前 7 个元素的和 | 3+1+7+0+4+1+6=22 ✓ |
-
----
-
-### 2.3 第二层：Triton 编译器怎么实现 Scan
-
-Triton 提供 `tl.associative_scan`，一行代码搞定:
+### 3.3 Triton 的正确写法
 
 ```python
+# 一行搞定 — 编译器自动展开
 x = tl.associative_scan(x, 0, lambda a, b: a + b)
 ```
 
 编译器把它展开成两层:
 
-**Layer 1 — Warp 内 (register-level, 最快):**
+**Warp 内 (register-level):** `__shfl_up_sync`, stride=1,2,4,8,16，5 轮后每个 warp 得到 32 个元素的 inclusive scan。延迟 ~1 cycle/轮。
 
-使用 `__shfl_up_sync`（PTX warp shuffle），stride = 1, 2, 4, 8, 16，共 **5 轮**:
+**Warp 间 (shared memory):** 各 warp 的 warp_sum 写 smem → `__syncthreads` → thread 0 对 smem 做 scan → 把前置 warp 的累加值加回本 warp。**这是和 reduce 的关键区别: reduce 写 smem 就结束，scan 必须写回去。**
+
+### 3.4 常见错误: `tl.where` 不能做 shift
+
+```python
+# ❌ 错误 — 这段代码不是 Blelloch scan
+for offset in [1, 2, 4, 8, 16]:
+    prev = tl.where(tl.arange(0, BLOCK_SIZE) >= offset, x, tl.zeros_like(x))
+    x = x + prev  # thread i 读到的是 x[i]，不是 x[i-offset]！
+```
+
+`tl.where(mask, x, 0)` 只在 `x[i]` 和 `0` 之间选——thread `i` 永远读不到 thread `i-offset` 的值。**Triton 没有 `tl.shift` 原语。** 跨线程数据移动只有三条路: warp shuffle（≤32 threads）、`tl.load` 偏移地址（走 smem）、以及 `tl.associative_scan`（编译器帮你选）。
+
+### 3.5 跨 Block Scan
+
+Block 之间没有共享寄存器/smem，必须通过 global memory 传 block sum。至少需要 **两个 kernel**:
 
 ```
-Round 0 (stride=1):  thread i 从 thread i-1 拿值, 相加 → 相邻合并
-Round 1 (stride=2):  thread i 从 thread i-2 拿值, 相加 → 跨2合并
-Round 2 (stride=4):  thread i 从 thread i-4 拿值, 相加 → 跨4合并
-Round 3 (stride=8):  thread i 从 thread i-8 拿值, 相加 → 跨8合并
-Round 4 (stride=16): thread i 从 thread i-16 拿值, 相加 → 跨16合并
+Kernel 1: 各 block 做 block 内 scan + 输出 block_sum
+Kernel 2: 对 block_sums 做 scan（数据量小，单 block 搞定），
+          然后把前置 block 的累加值加回各 block 内部
 ```
 
-5 轮后每个 warp 得到 32 个元素的 **inclusive scan**。`__shfl_up_sync` 延迟 ~1 cycle（比 shared memory 快 ~20×），这是 warp 级 scan 极快的原因。
+单 kernel 内 `for block_start in range(0, N, BLOCK_SIZE)` 做不到这件事——Block 0 的 sum 无法在 kernel 执行期间传给 Block 1。
 
-**Layer 2 — Warp 间 (shared memory):**
-
-Warps 之间不能 shuffle，必须通过 shared memory 传递数据:
-
-1. 各 warp 最后一个 thread 把 **warp_sum** 写入 smem
-2. `__syncthreads` 后，thread 0 对 smem 里的 warp_sums 做一次 warp 级 scan
-3. 把 smem 里**前置 warp 的累加值**加回到本 warp 每个元素上
-
-这和 Reduce 的关键区别: **Reduce 写完 smem 就结束了（只需要标量结果）; Scan 写完 smem 后还必须写回去，因为每个 thread 都要自己的输出。**
+跨 block scan 的推荐方案: 用 CUB 的 `DeviceScan`，或如果数据量不大（<1024），直接用 PyTorch `torch.cumsum`。
 
 ---
 
-### 2.4 第三层：为什么你手写的代码是错的
+## 4. Gather / Scatter — 非连续内存访问
 
-原始代码:
+### 4.1 概念
 
-```python
-for offset in [1, 2, 4, 8, 16, 32, 64, 128, 256]:
-    prev = tl.where(tl.arange(0, BLOCK_SIZE) >= offset,
-                    x, tl.zeros_like(x))
-    x = x + prev  # ← 这行是错的
-```
-
-**根本错误: `prev` 并没有做 shift。**
-
-`tl.where(tl.arange(0, BLOCK_SIZE) >= offset, x, tl.zeros_like(x))` 的意思是:
-- thread `i` 如果 `i >= offset` → 取 `x[i]`
-- thread `i` 如果 `i < offset` → 取 `0`
-
-所以 thread `i` 读到的永远是**自己的** `x[i]`，不是 `x[i - offset]`。最终效果:
-
-```python
-x = x + prev  # x[i] + x[i] (if i >= offset else x[i] + 0)
-              # = 2*x[i] (if i >= offset) else x[i]
-              # 而不是 x[i] + x[i - offset] !
-```
-
-这不是 bug 的变种 —— 它做了一件**完全不同的事**。Blelloch scan 要求 thread `i` 能读到 thread `i-offset` 的值，即**跨线程数据移动**。`tl.where` 只做 mask 选择，不具备跨线程能力。
-
-**Triton 没有 `tl.shift` 原语。** 做跨线程数据移动只有三条路:
-
-| 方式 | 适用场景 | 延迟 |
-|------|---------|------|
-| `__shfl_up_sync` (warp shuffle) | warp 内 (≤32 threads) | ~1 cycle |
-| `tl.load` 配合偏移地址 | 任意范围 | ~20 cycles (smem) |
-| `tl.associative_scan` | 任意 scan 操作 | 编译器自动选上面两种 |
-
-**正确做法:**
-
-```python
-# 一行搞定 — 编译器自动展开 warp shuffle + smem
-x = tl.associative_scan(x, 0, lambda a, b: a + b)
-```
-
----
-
-### 2.5 跨 Block Scan 的挑战
-
-上面讲的都是 **block 内** scan（`N ≤ BLOCK_SIZE`）。跨 block 的 scan（`N > BLOCK_SIZE`）更麻烦:
-
-相邻 block 之间无法共享寄存器或 smem，必须通过 **global memory** 传递 block 前缀和。通常需要**两个 kernel**:
-
-```
-Kernel 1: 各 block 独立做 block 内 scan，同时输出 block_sum
-          block 0 → scan([a₁..aₙ]) = [p₁..pₙ], sum = S₀
-          block 1 → scan([b₁..bₙ]) = [q₁..qₙ], sum = S₁
-          ...
-
-Kernel 2: 对 block_sums [S₀, S₁, ...] 做 scan → [P₀, P₁, ...]
-          然后修正各 block 内的值:
-          block 1 的每个元素 += P₀
-          block 2 的每个元素 += P₁
-          ...
-```
-
-这是你代码里 `for block_start in range(0, N_COLS, BLOCK_SIZE)` 这种单 kernel 循环做不到的事——它只能做 block 内 scan，跨 block 的前缀依赖链无法在一个 kernel 内解决。
-
-**替代方案:** 如果 scan 长度不大（<1024），直接用 PyTorch `torch.cumsum`；如果必须 GPU 上做大 scan，用 CUB 的 `DeviceScan`（Triton 目前无内置跨 block scan 支持）。
-
----
-
-## 3. Gather / Scatter — 非连续的内存访问
-
-### 3.1 概念
-
-Gather:  根据索引数组从源数组中收集数据
+两个互为逆操作的模式，都在做"根据索引数组重新排列数据":
 
 $$
-\text{output}[i] = \text{input}[\text{index}[i]]
+\begin{aligned}
+\text{Gather: } &\text{out}[i] = \text{inp}[\text{idx}[i]] \\
+\text{Scatter: } &\text{out}[\text{idx}[i]] = \text{inp}[i]
+\end{aligned}
 $$
 
-Scatter: 根据索引数组向目标数组分发数据
+### 4.2 Gather 的性能本质
 
-$$
-\text{output}[\text{index}[i]] = \text{input}[i]
-$$
+Gather 的访存模式由 `idx` 决定。GPU 的 warp 内 32 个 thread 同时发起 load——如果 `idx` 是连续的，thread 0→addr 0x100, thread 1→addr 0x104，一个 128B transaction 全搞定（coalesced）。如果 `idx` 是随机的，32 个 thread 访问 32 个不同 cache line → 32 次 transaction → **带宽利用率 ~3%**。
 
-应用:
-  - Embedding lookup (gather)
-  - Attention 的 KV cache 更新 (scatter)
-  - Sparse matrix operations
+这就是为什么 embedding lookup（gather 的主要应用）在推荐系统中是瓶颈——大 embedding table + 随机 batch。
 
-### 3.2 Triton 实现：Embedding Lookup (Gather)
+### 4.3 Triton 写法
 
 ```python
 @triton.jit
-def gather_kernel(input_ptr, index_ptr, output_ptr,
-                  N, EMBED_DIM,
+def gather_kernel(inp_ptr, idx_ptr, out_ptr, N, BLOCK_SIZE: tl.constexpr):
+    pid = tl.program_id(0)
+    offs = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+    mask = offs < N
+    idx = tl.load(idx_ptr + offs, mask=mask, other=0)
+    # 关键: 用 idx 做指针偏移 → 每个 thread 访问不同地址
+    val = tl.load(inp_ptr + idx, mask=mask, other=0.0)
+    tl.store(out_ptr + offs, val, mask=mask)
+```
+
+### 4.4 Scatter 的额外问题: 写冲突
+
+Scatter 里 `out[idx[i]] = inp[i]` ——多个 thread 可能同时写同一个 `out` 位置。如果不冲突（如 permute），用普通 `tl.store`；如果可能冲突（如 histogram），必须用 `tl.atomic_add`，代价很高。
+
+---
+
+## 5. Convolution — 把空间归约映射到 GEMM
+
+### 5.1 三种策略
+
+| 策略 | 原理 | 优点 | 缺点 |
+|------|------|------|------|
+| Direct conv | 7 层嵌套循环，直接算 | 内存友好 | cache 不友好，难优化 |
+| Im2col + GEMM | 把 sliding window 展开成矩阵乘 | 可复用 GEMM 优化 | 内存膨胀 K²× |
+| Winograd / FFT | 数学变换减少乘法次数 | 3×3 conv 理论最优 | 精度损失，不通用 |
+
+### 5.2 Triton 中做 Im2col Conv
+
+核心: 每个 program 负责一个输出 tile，在 KH×KW 维上做 reduction。
+
+```python
+@triton.jit
+def conv2d_kernel(inp_ptr, w_ptr, out_ptr,
+                  H, W, C_IN, C_OUT, K,
                   BLOCK_SIZE: tl.constexpr):
-    """
-    Embedding lookup: output[i, :] = input[index[i], :]
-    
-    Gather 在 GPU 上容易实现但性能差:
-    - index 可以指向 input 的任意位置
-    - 无法做 coalescing
-    - L2 cache 命中率取决于 index 的分布（随机 → 低，顺序 → 高）
-    """
     pid = tl.program_id(0)
-    offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
-    mask = offsets < N
-    
-    # 加载索引
-    indices = tl.load(index_ptr + offsets, mask=mask, other=0)
-    
-    # Gather: 根据索引从 input 加载
-    # 每个线程访问不同的 input 行 → 非合并访问 → 慢
-    for d in range(0, EMBED_DIM, BLOCK_SIZE):
-        d_offsets = d + tl.arange(0, BLOCK_SIZE)
-        d_mask = d_offsets < EMBED_DIM
-        
-        # 计算每个线程要访问的地址
-        ptrs = input_ptr + indices[:, None] * EMBED_DIM + d_offsets[None, :]
-        vals = tl.load(ptrs, mask=mask[:, None] & d_mask[None, :])
-        
-        out_ptrs = output_ptr + offsets[:, None] * EMBED_DIM + d_offsets[None, :]
-        tl.store(out_ptrs, vals, mask=mask[:, None] & d_mask[None, :])
+    # 计算这个 program 负责的输出位置
+    h_out = pid // ((W - K + 1) * C_OUT)
+    w_out = (pid // C_OUT) % (W - K + 1)
+    c_out = pid % C_OUT
+    acc = 0.0
 
-# Performance note:
-# - 随机 gather: ~10-20% HBM bandwidth（最坏情况）
-# - 顺序 gather: ~80% HBM bandwidth（接近 coalesced）
+    for kh in range(K):
+        for kw in range(K):
+            # 输入 feature map 的对应位置
+            h_in = h_out + kh
+            w_in = w_out + kw
+            inp_off = (h_in * W + w_in) * C_IN
+            w_off = (kh * K + kw) * C_IN * C_OUT + c_out
+            for c_in in range(0, C_IN, BLOCK_SIZE):
+                offs = c_in + tl.arange(0, min(BLOCK_SIZE, C_IN - c_in))
+                inp = tl.load(inp_ptr + inp_off + offs)
+                w = tl.load(w_ptr + w_off + offs * C_OUT)
+                acc += tl.sum(inp * w)
+
+    tl.store(out_ptr + pid, acc)
 ```
 
-### 3.3 Triton 实现：Scatter
-
-```python
-@triton.jit
-def scatter_kernel(input_ptr, index_ptr, output_ptr,
-                   N, BLOCK_SIZE: tl.constexpr):
-    """
-    Scatter: output[index[i]] = input[i]
-    
-    问题: 多个线程可能写同一个 output 位置 → 需要 atomic
-    """
-    pid = tl.program_id(0)
-    offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
-    mask = offsets < N
-    
-    vals = tl.load(input_ptr + offsets, mask=mask, other=0.0)
-    indices = tl.load(index_ptr + offsets, mask=mask, other=0)
-    
-    # Scatter with atomic add（如果可能有冲突）
-    out_ptrs = output_ptr + indices
-    tl.atomic_add(out_ptrs, vals, mask=mask)
-```
+性能通常 memory-bound（算术强度 ≈ 0.5-0.9 FLOP/byte）。
 
 ---
 
-## 4. Convolution — 把卷积映射到 GEMM
-
-### 4.1 三种实现策略
-
-1. Direct convolution:
-   直接写 conv 的 7 层嵌套循环
-   优点: 简单，内存友好
-   缺点: 难优化，cache 不友好
-
-2. Im2col + GEMM:
-
-   $$
-   \text{im2col}:\ (C, H, W) \to (C \cdot K \cdot K,\ H_{\text{out}} \cdot W_{\text{out}})
-   $$
-
-   $$
-   \text{GEMM}:\ C_{\text{out}} \times (C \cdot K \cdot K) \otimes (C \cdot K \cdot K) \times (H_{\text{out}} \cdot W_{\text{out}})
-   $$
-
-   优点: 可以用高度优化的 GEMM
-   缺点: im2col 有内存膨胀（$K \cdot K \times$）
-
-3. Winograd / FFT:
-   用数学变换减少乘法次数
-   优点: 对特定 kernel size 极致优化
-   缺点: 复杂，有精度问题
-
-### 4.2 Triton 中实现 Depthwise Conv
-
-```python
-# 见 phase2_compute/06_depthwise_conv.py
-# 关键: 每个 program 处理一个输出 spatial tile + 一组 channels
-# 沿 KH×KW 维做 reduction
-
-# 性能: 通常 memory-bound（算术强度 = KH*KW / (KH*KW+4) ≈ 0.5-0.9 FLOP/byte）
-```
-
----
-
-## 5. Atomic Operations — 处理并发写
-
-### 5.1 Triton 支持的 Atomic
-
-```python
-tl.atomic_add(ptr, val)     # 原子加法
-tl.atomic_max(ptr, val)     # 原子最大值
-tl.atomic_min(ptr, val)     # 原子最小值
-tl.atomic_and(ptr, val)     # 原子按位与
-tl.atomic_or(ptr, val)      # 原子按位或
-tl.atomic_xor(ptr, val)     # 原子按位异或
-tl.atomic_cas(ptr, cmp, val) # 原子比较并交换
-tl.atomic_xchg(ptr, val)    # 原子交换
-```
-
-### 5.2 Atomic 的性能代价
-
-当多个线程对同一地址做 atomic 操作时:
-  1 个线程: 正常速度
-  2-4 个线程: 轻微变慢
-  32+ 个线程: 严重串行化 → 可能比非 atomic 版本慢 10-100×
-
-避免大量 atomic 竞争的策略:
-  1. 先做 local reduce，最后再 atomic 写一次
-  2. 用 tiling 减少 atomic 的粒度
-  3. 如果可以，用 shared memory buffer 先缓冲再写
-
----
-
-## 6. 常见模式的决策树
+## 6. 决策树: 看到一个问题，选哪个模式？
 
 ```
-你想实现什么？
+你的计算长什么样？
 
-├── Elementwise: x[i] = f(y[i], z[i])
-│   → 最简单的 kernel，memory-bound
-│   → 考虑: 是否可以和相邻 op 融合？
-
-├── Reduce: result = reduce(x, dim=d)
-│   → memory-bound, 用 tl.sum/tl.max(axis=d)
-│   → 考虑: 是否可以融入 producer/consumer kernel？
-
-├── GEMM: C = A @ B
-│   → 通常 compute-bound (大尺寸)
-│   → 用 shared memory + autotune + num_stages
-│   → 考虑: split-K 如果 K 很大
-
-├── Scan: output[i] = f(output[i-1], input[i])
-│   → 有数据依赖，但 Blelloch 算法做到 O(log n) 深度
-│   → Block 内: 用 tl.associative_scan (编译器自动展开 warp shuffle + smem)
-│   → 跨 Block: 必须双 kernel（block sum 通过 global memory 传递）
-│   → 是 Reduce 的"镜像问题" — fan-out vs fan-in
-
-├── Gather/Scatter:
-│   → 通常 memory-bound, 合并访问难
-│   → 随机 gather: 性能受限，接受就好
-
-└── Attention:
-    → memory-bound (长序列) 或 compute-bound (短序列)
-    → 用 Flash Attention tiling
-    → 可叠加 causal mask, GQA
+├── output[i] = f(input[i])                    → Elementwise
+│    没有跨元素的依赖。考虑和相邻 op 融合。
+│
+├── result = aggregate(input, dim=d)           → Reduce
+│    多对一的聚合。用 tl.sum/tl.max(axis=d)。
+│    memory-bound，考虑融入 producer/consumer。
+│
+├── C = A @ B (or A @ B^T)                     → GEMM
+│    compute-bound (大尺寸时)。用 tiled matmul +
+│    autotune + num_stages。
+│
+├── output[i] 依赖 output[i-1]                 → Scan
+│    block 内用 tl.associative_scan。
+│    跨 block 用双 kernel 或 CUB。
+│
+├── output[i] = input[index[i]]                → Gather
+│    根据 index 分布，可能 coalesced 也可能完全随机。
+│    随机情况下接受低带宽利用率。
+│
+└── sliding window over spatial dims           → Convolution
+    小 kernel (3×3) 用 Winograd，否则 Im2col+GEMM。
+    depthwise conv 是 memory-bound 特殊情况。
 ```
 
 ---
 
 ## 参考资料
 
-- [Triton Official Tutorials](https://triton-lang.org/main/getting-started/tutorials/)
-- [GPU Gems 2 — Parallel Prefix Sum (scan)](https://developer.nvidia.com/gpugems/gpugems2/part-iv-general-purpose-computation-gpus-primer/chapter-39-parallel-prefix-sum-scan-cuda)
+- [Triton Tutorials — 官方示例](https://triton-lang.org/main/getting-started/tutorials/)
+- [GPU Gems 2, Ch39 — Parallel Prefix Sum (Blelloch scan 经典)](https://developer.nvidia.com/gpugems/gpugems2/part-iv-general-purpose-computation-gpus-primer/chapter-39-parallel-prefix-sum-scan-cuda)
 - [CUTLASS — Implicit GEMM for Convolution](https://github.com/NVIDIA/cutlass/blob/main/media/docs/implicit_gemm_convolution.md)
