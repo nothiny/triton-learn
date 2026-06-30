@@ -188,22 +188,16 @@ E5M2 (5 exponent, 2 mantissa):
 
 ### 5.2 Block-wise Scaling
 
-$$
-\begin{aligned}
-&\text{直接用 fp8 精度不够？— 加 scaling:} \\
-\\
-&\text{原始 (fp16): } [0.01, 0.02, 0.03, 100.0, 200.0, 300.0] \leftarrow \text{动态范围大} \\
-\\
-&\text{直接量化到 fp8: } [0.01, 0.02, 0.03, 100, 200, 300] \rightarrow \text{前面 3 个被截断为 0！} \\
-\\
-&\text{Block-wise scaling:} \\
-&\text{分成两个 block:} \\
-&\text{Block 0: } [0.01, 0.02, 0.03] \rightarrow \text{scale}=256 \rightarrow [2.56, 5.12, 7.68] \\
-&\text{Block 1: } [100, 200, 300] \rightarrow \text{scale}=1 \rightarrow [100, 200, 300] \\
-\\
-&\text{每个 block 独立 scale} \rightarrow \text{小值不被截断！}
-\end{aligned}
-$$
+直接用 fp8 精度不够？— 加 scaling:
+
+- 原始 (fp16): `[0.01, 0.02, 0.03, 100.0, 200.0, 300.0]` ← 动态范围大
+- 直接量化到 fp8: `[0.01, 0.02, 0.03, 100, 200, 300]` → 前面 3 个被截断为 0！
+
+**Block-wise scaling:**
+- 分成两个 block:
+  - Block 0: `[0.01, 0.02, 0.03]` → scale=256 → `[2.56, 5.12, 7.68]`
+  - Block 1: `[100, 200, 300]` → scale=1 → `[100, 200, 300]`
+- 每个 block 独立 scale → 小值不被截断！
 
 Triton 3.x 支持: tl.dot 接受 scale_a, scale_b 参数
 

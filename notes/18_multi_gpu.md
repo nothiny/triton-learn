@@ -90,27 +90,19 @@ Reduce-Scatter: All-Reduce 的优化——先 reduce 再 scatter
 
 列并行 (Column Parallel):
 
-$$
-\begin{aligned}
-\text{原始}&:\ Y = X \cdot W \quad (W: [D_{\text{in}}, D_{\text{out}}]) \\
-\text{分割}&:\ W = [W_1 \mid W_2] \quad (W_1: [D_{\text{in}}, D_{\text{out}}/2],\ W_2: [D_{\text{in}}, D_{\text{out}}/2]) \\
-\text{GPU 0}&:\ Y_1 = X \cdot W_1 \quad (Y_1: [B, D_{\text{out}}/2]) \\
-\text{GPU 1}&:\ Y_2 = X \cdot W_2 \quad (Y_2: [B, D_{\text{out}}/2]) \\
-\text{最后}&:\ \text{All-Gather 拼回 } Y = [Y_1 \mid Y_2]
-\end{aligned}
-$$
+- 原始: `Y = X · W`  (W: [D_in, D_out])
+- 分割: `W = [W₁ | W₂]`  (W₁: [D_in, D_out/2], W₂: [D_in, D_out/2])
+- GPU 0: `Y₁ = X · W₁`  (Y₁: [B, D_out/2])
+- GPU 1: `Y₂ = X · W₂`  (Y₂: [B, D_out/2])
+- 最后: All-Gather 拼回 `Y = [Y₁ | Y₂]`
 
 行并行 (Row Parallel):
 
-$$
-\begin{aligned}
-\text{原始}&:\ Z = Y \cdot V \quad (Y: [B, D_{\text{in}}],\ V: [D_{\text{in}}, D_{\text{out}}]) \\
-\text{分割}&:\ Y = [Y_1 \mid Y_2] \\
-\text{GPU 0}&:\ Z_1 = Y_1 \cdot V_1 \quad (V_1: [D_{\text{in}}/2, D_{\text{out}}]) \\
-\text{GPU 1}&:\ Z_2 = Y_2 \cdot V_2 \quad (V_2: [D_{\text{in}}/2, D_{\text{out}}]) \\
-\text{最后}&:\ \text{All-Reduce } Z = Z_1 + Z_2
-\end{aligned}
-$$
+- 原始: `Z = Y · V`  (Y: [B, D_in], V: [D_in, D_out])
+- 分割: `Y = [Y₁ | Y₂]`
+- GPU 0: `Z₁ = Y₁ · V₁`  (V₁: [D_in/2, D_out])
+- GPU 1: `Z₂ = Y₂ · V₂`  (V₂: [D_in/2, D_out])
+- 最后: All-Reduce `Z = Z₁ + Z₂`
 
 ### 3.2 在 Triton 中写 Tensor Parallel 的 kernel
 

@@ -245,13 +245,9 @@ $$
 
 标准实现: 3 个 kernel
 
-$$
-\begin{aligned}
-&1.\ \text{Linear: } \text{gate} = x \cdot W_{\text{gate}}^T \\
-&2.\ \text{Linear: } \text{up} = x \cdot W_{\text{up}}^T \\
-&3.\ \text{SiLU + multiply: } \text{result} = (\text{gate} \cdot \sigma(\text{gate})) \cdot \text{up}
-\end{aligned}
-$$
+1. Linear: `gate = x · W_gate^T`
+2. Linear: `up = x · W_up^T`
+3. SiLU + multiply: `result = (gate · σ(gate)) · up`
 
 问题: gate 和 up 写回 HBM, 再从 HBM 读回做 elementwise
 

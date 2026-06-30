@@ -380,14 +380,11 @@ Blocked layout:                    MMA layout:
 
 
 $$
-\begin{aligned}
-\text{tt.dot } &\rightarrow \text{ 识别为矩阵乘 } \rightarrow \text{ 替换为 MMA intrinsic} \\[4pt]
-\text{具体:} \\
-\text{输入: } &\text{tt.dot}(\%a, \%b) : \text{tensor}\langle M \times K \rangle \otimes \text{tensor}\langle K \times N \rangle \rightarrow \text{tensor}\langle M \times N \rangle \\
-\text{输出: } &\text{MMA 操作序列，使用 MmaEncodingAttr} \\
-&\text{自动选择: m16n8k16 (Ampere) 或 m16n8k32 (Hopper)} \\[4pt]
-\text{类比: } &\text{LLVM 的 ISel（指令选择）。把"通用运算"替换为"硬件特定指令"。}
-\end{aligned}
+`tt.dot` → 识别为矩阵乘 → 替换为 MMA intrinsic
+
+- 输入: `tt.dot(%a, %b) : tensor⟨M×K⟩ ⊗ tensor⟨K×N⟩ → tensor⟨M×N⟩`
+- 输出: MMA 操作序列，使用 MmaEncodingAttr，自动选择 m16n8k16 (Ampere) 或 m16n8k32 (Hopper)
+- 类比: LLVM 的 ISel（指令选择）。把"通用运算"替换为"硬件特定指令"
 $$
 
 

@@ -156,27 +156,17 @@ Triton 目前还没有 Thread Block Cluster 的抽象。
 
 ### 5.1 两种 FP8 格式
 
-$$
-\begin{aligned}
-\text{E4M3 (更精确):} &\quad 1\text{ sign} + 4\text{ exponent} + 3\text{ mantissa} = 8\text{ bits} \\
-&\quad \text{范围: } \pm 448,\ \text{最小正数: } 2^{-6} \approx 0.016 \\
-&\quad \text{用于: 前向计算} \\[4pt]
-\text{E5M2 (更大范围):} &\quad 1\text{ sign} + 5\text{ exponent} + 2\text{ mantissa} = 8\text{ bits} \\
-&\quad \text{范围: } \pm 57344,\ \text{最小正数: } 2^{-14} \approx 0.00006 \\
-&\quad \text{用于: 反向传播（梯度范围大但精度要求低）}
-\end{aligned}
-$$
+| 格式 | Sign | Exponent | Mantissa | 范围 | 最小正数 | 用途 |
+|------|------|----------|----------|------|----------|------|
+| **E4M3** (更精确) | 1 | 4 | 3 | ±448 | $2^{-6} \approx 0.016$ | 前向计算 |
+| **E5M2** (更大范围) | 1 | 5 | 2 | ±57344 | $2^{-14} \approx 0.00006$ | 反向传播 |
 
 ### 5.2 Block-wise Scaling
 
-$$
-\begin{aligned}
-&\text{原始数据（fp16）} \rightarrow \text{量化（per-block scaling）} \rightarrow \text{fp8} \\
-&\text{GEMM in fp8} \rightarrow \text{输出} \times \text{scale}_A \times \text{scale}_B \rightarrow \text{恢复精度} \\[4pt]
-&\text{H100 的 FP8 MMA 自带 scaling:} \\
-&D = (A_{\text{fp8}} \times \text{scale}_A) \mathbin{\text{@}} (B_{\text{fp8}} \times \text{scale}_B) + C_{\text{fp32}}
-\end{aligned}
-$$
+原始数据（fp16）→ 量化（per-block scaling）→ fp8 → GEMM in fp8 → 输出 × scale_A × scale_B → 恢复精度
+
+H100 的 FP8 MMA 自带 scaling:
+- `D = (A_fp8 × scale_A) @ (B_fp8 × scale_B) + C_fp32`
 
 ---
 
