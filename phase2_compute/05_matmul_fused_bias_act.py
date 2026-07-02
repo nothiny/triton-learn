@@ -27,11 +27,23 @@
 运行: python phase2_compute/05_matmul_fused_bias_act.py
 """
 
+import importlib.util
 import math
+import os
 import torch
 import triton
 import triton.language as tl
 from triton.testing import do_bench
+
+# Load matmul_tiled from 02 for fair Triton-vs-Triton comparison
+# (importlib needed because filenames starting with digits can't be imported directly)
+_SPEC_TILED = importlib.util.spec_from_file_location(
+    "matmul_tiled",
+    os.path.join(os.path.dirname(__file__), "02_matmul_tiled.py"),
+)
+_MOD_TILED = importlib.util.module_from_spec(_SPEC_TILED)
+_SPEC_TILED.loader.exec_module(_MOD_TILED)
+matmul_tiled = _MOD_TILED.matmul_tiled
 
 
 # Activation type constants (integer, passed as tl.constexpr to kernel)
@@ -40,10 +52,44 @@ from triton.testing import do_bench
 
 @triton.autotune(
     configs=[
-        triton.Config({"BLOCK_M": 64, "BLOCK_N": 64, "BLOCK_K": 32}, num_warps=4, num_stages=2),
-        triton.Config({"BLOCK_M": 128, "BLOCK_N": 64, "BLOCK_K": 32}, num_warps=4, num_stages=2),
+        # 搜索空间与 02_matmul_tiled 完全一致，覆盖 BLOCK_M/ BLOCK_N/ BLOCK_K/ num_warps/ num_stages
+        # ---- 小 tile: BLOCK_M=64 ----
+        triton.Config({"BLOCK_M": 64, "BLOCK_N": 64,  "BLOCK_K": 32}, num_warps=2, num_stages=2),
+        triton.Config({"BLOCK_M": 64, "BLOCK_N": 64,  "BLOCK_K": 32}, num_warps=4, num_stages=2),
+        triton.Config({"BLOCK_M": 64, "BLOCK_N": 64,  "BLOCK_K": 32}, num_warps=4, num_stages=3),
+
+        triton.Config({"BLOCK_M": 64, "BLOCK_N": 128, "BLOCK_K": 32}, num_warps=4, num_stages=2),
+        triton.Config({"BLOCK_M": 64, "BLOCK_N": 128, "BLOCK_K": 32}, num_warps=4, num_stages=3),
+
+        triton.Config({"BLOCK_M": 128, "BLOCK_N": 64,  "BLOCK_K": 32}, num_warps=4, num_stages=2),
+        triton.Config({"BLOCK_M": 128, "BLOCK_N": 64,  "BLOCK_K": 32}, num_warps=4, num_stages=3),
+
+        # ---- 中等 tile: BLOCK_M=128 ----
+        triton.Config({"BLOCK_M": 128, "BLOCK_N": 128, "BLOCK_K": 32}, num_warps=4, num_stages=2),
+        triton.Config({"BLOCK_M": 128, "BLOCK_N": 128, "BLOCK_K": 32}, num_warps=4, num_stages=3),
         triton.Config({"BLOCK_M": 128, "BLOCK_N": 128, "BLOCK_K": 32}, num_warps=8, num_stages=2),
+        triton.Config({"BLOCK_M": 128, "BLOCK_N": 128, "BLOCK_K": 32}, num_warps=8, num_stages=3),
+
+        triton.Config({"BLOCK_M": 128, "BLOCK_N": 128, "BLOCK_K": 64}, num_warps=4, num_stages=2),
+        triton.Config({"BLOCK_M": 128, "BLOCK_N": 128, "BLOCK_K": 64}, num_warps=8, num_stages=2),
+        triton.Config({"BLOCK_M": 128, "BLOCK_N": 128, "BLOCK_K": 64}, num_warps=8, num_stages=3),
+
+        triton.Config({"BLOCK_M": 128, "BLOCK_N": 256, "BLOCK_K": 32}, num_warps=8, num_stages=2),
         triton.Config({"BLOCK_M": 128, "BLOCK_N": 256, "BLOCK_K": 32}, num_warps=8, num_stages=3),
+
+        # ---- 大 tile: BLOCK_M=256 ----
+        triton.Config({"BLOCK_M": 256, "BLOCK_N": 128, "BLOCK_K": 32}, num_warps=8, num_stages=2),
+        triton.Config({"BLOCK_M": 256, "BLOCK_N": 128, "BLOCK_K": 32}, num_warps=8, num_stages=3),
+
+        triton.Config({"BLOCK_M": 256, "BLOCK_N": 256, "BLOCK_K": 32}, num_warps=8, num_stages=2),
+        triton.Config({"BLOCK_M": 256, "BLOCK_N": 256, "BLOCK_K": 32}, num_warps=8, num_stages=3),
+        triton.Config({"BLOCK_M": 256, "BLOCK_N": 256, "BLOCK_K": 64}, num_warps=8, num_stages=2),
+        triton.Config({"BLOCK_M": 256, "BLOCK_N": 256, "BLOCK_K": 64}, num_warps=8, num_stages=3),
+        triton.Config({"BLOCK_M": 256, "BLOCK_N": 256, "BLOCK_K": 64}, num_warps=8, num_stages=4),
+
+        # ---- 大 K block（减少 K 维迭代次数）----
+        triton.Config({"BLOCK_M": 128, "BLOCK_N": 128, "BLOCK_K": 128}, num_warps=8, num_stages=3),
+        triton.Config({"BLOCK_M": 128, "BLOCK_N": 256, "BLOCK_K": 64}, num_warps=8, num_stages=3),
     ],
     key=["M", "N", "K"],
 )
@@ -161,11 +207,41 @@ def fused_matmul(
 # ==============================================================================
 
 
-def unfused_matmul_bias_act(
+def unfused_cublas_matmul_bias_act(
     a: torch.Tensor, b: torch.Tensor, bias: torch.Tensor, activation: str = "none"
 ) -> torch.Tensor:
-    """Separate kernels: matmul → bias → activation (3 HBM roundtrips)."""
+    """cuBLAS matmul + separate bias + activation kernels (3 HBM roundtrips).
+
+    Uses PyTorch's ``a @ b`` which dispatches to cuBLAS for fp16 GEMM — this is
+    the strongest available baseline but involves THREE separate kernel launches
+    (matmul → bias → activation), each writing intermediate results to HBM.
+    """
     c = a @ b
+    c = c + bias
+    if activation == "relu":
+        c = torch.relu(c)
+    elif activation == "gelu":
+        c = torch.nn.functional.gelu(c, approximate="tanh")
+    elif activation == "silu":
+        c = torch.nn.functional.silu(c)
+    return c
+
+
+def unfused_triton_matmul_bias_act(
+    a: torch.Tensor, b: torch.Tensor, bias: torch.Tensor, activation: str = "none"
+) -> torch.Tensor:
+    """Triton matmul (02_matmul_tiled) + separate bias + activation kernels.
+
+    This is the FAIR baseline for measuring fusion benefit: both fused and
+    unfused paths use the SAME Triton matmul implementation (identical autotune
+    configs).  The only difference is whether bias + activation happen inside
+    the matmul kernel (fused, 1 kernel launch) or as separate PyTorch ops
+    (unfused, 3 kernel launches = 2 extra HBM roundtrips).
+
+    By comparing ``unfused_triton_*`` against ``fused_matmul`` we isolate the
+    pure epilogue-fusion effect without the confounding cuBLAS-vs-Triton gap.
+    """
+    c = matmul_tiled(a, b)
     c = c + bias
     if activation == "relu":
         c = torch.relu(c)
@@ -205,33 +281,71 @@ def main():
         # Fused Triton
         c_fused = fused_matmul(a, b, bias, activation=act)
 
-        # Reference (unfused)
-        c_ref = unfused_matmul_bias_act(a.float(), b.float(), bias.float(), activation=act).half()
+        # Reference (cuBLAS unfused, in fp32 for accuracy)
+        c_ref = unfused_cublas_matmul_bias_act(a.float(), b.float(), bias.float(), activation=act).half()
 
         max_diff = (c_fused.float() - c_ref.float()).abs().max().item()
         tol = max(0.05, 0.005 * (K ** 0.5))
         status = "✅" if max_diff < tol else "❌"
         print(f"  max_diff = {max_diff:.6e} (tol={tol:.1e})  {status}")
 
-    # Performance: fused vs unfused
-    print(f"\n{'='*70}")
-    print("Performance: Fused vs Unfused")
-    print(f"{'='*70}")
+    # Performance: three-way comparison
+    #   (a) cuBLAS unfused — the strongest matmul but 3 kernel launches
+    #   (b) Triton unfused — same matmul as fused, but split into 3 kernels
+    #   (c) Triton fused   — matmul + bias + activation in 1 kernel
+    #
+    # Shapes are grouped by scale so you can see how fusion benefit changes
+    # as matrices grow from moderate → large → huge.
 
-    for M, N, K in [(1024, 4096, 4096), (2048, 4096, 4096)]:
+    all_shapes = [
+        # --- Moderate (FFN on small batch / short sequence) ---
+        # (M, K, N) with context
+        (1024, 4096, 4096,   "Llama 8B: seq=1024, Q/K/V"),
+        (2048, 4096, 4096,   "Llama 8B: seq=2048, Q/K/V"),
+
+        # --- Large (closer to real workloads) ---
+        (4096, 4096, 4096,   "Llama 8B: seq=4096, Q/K/V"),
+        (4096, 4096, 14336,  "Llama 8B: seq=4096, FFN up"),
+        (4096, 14336, 4096,  "Llama 8B: seq=4096, FFN down"),
+
+        # --- Huge (Llama 70B scale) ---
+        (8192, 8192, 8192,   "Llama 70B: seq=8192, Q/K/V"),
+        (8192, 8192, 28672,  "Llama 70B: seq=8192, FFN up"),
+
+        # --- Extreme (long sequence) ---
+        (16384, 4096, 4096,  "Long seq: 16K tokens, Q/K/V"),
+    ]
+
+    # Fixed activation for timing sweep (silu is most common in modern LLMs)
+    # Change to "gelu" if you want GELU-specific numbers.
+    for M, K, N, desc in all_shapes:
         for act in ["gelu", "silu"]:
             a = torch.randn(M, K, device="cuda", dtype=torch.float16)
             b = torch.randn(K, N, device="cuda", dtype=torch.float16)
             bias = torch.randn(N, device="cuda", dtype=torch.float16)
 
-            # Timing
+            ms_cublas_unf = do_bench(
+                lambda: unfused_cublas_matmul_bias_act(a, b, bias, activation=act)
+            )
+            ms_triton_unf = do_bench(
+                lambda: unfused_triton_matmul_bias_act(a, b, bias, activation=act)
+            )
             ms_fused = do_bench(lambda: fused_matmul(a, b, bias, activation=act))
-            ms_unfused = do_bench(lambda: unfused_matmul_bias_act(a, b, bias, activation=act))
 
-            speedup = ms_unfused / ms_fused
+            fusion_benefit = ms_triton_unf / ms_fused  # >1 means fusion helps
+
             label = f"{M}×{K}×{N} + {act}"
-            print(f"  {label}: fused={ms_fused:.3f}ms  unfused={ms_unfused:.3f}ms  "
-                  f"speedup={speedup:.2f}x")
+            print(f"  {label}  ({desc}):")
+            print(f"    cuBLAS unfused:  {ms_cublas_unf*1000:.1f} us")
+            print(f"    Triton unfused:  {ms_triton_unf*1000:.1f} us")
+            print(f"    Triton fused:    {ms_fused*1000:.1f} us")
+            print(f"    Fusion speedup:   {fusion_benefit:.2f}x  "
+                  f"({'✅' if fusion_benefit > 1.0 else '❌'} "
+                  f"vs Triton unfused)")
+            print(f"    vs cuBLAS:        {ms_fused / ms_cublas_unf:.2f}x  "
+                  f"({'✅' if ms_fused <= ms_cublas_unf else '❌'} "
+                  f"fused vs cuBLAS unfused)")
+            print()
 
     # Memory analysis
     print(f"\n{'='*70}")
@@ -253,10 +367,35 @@ def main():
 
 # PERFORMANCE NOTES
 # =================
-# - Epilogue fusion 的核心价值: 减少 HBM 往返次数
-# - 对于大矩阵 (M,N large), matmul 是 compute-bound, 融合收益不大
-# - 对于中等矩阵 (M,N moderate), matmul 接近 ridge point, 融合减少
-#   memory traffic 可以改善 10-30% 的延迟
+# Epilogue fusion 的核心价值: 减少 HBM 往返次数。
+#
+# --- 融合收益分析 (Triton vs Triton, 公平对比) ---
+# 当 fused 和 unfused 都使用相同的 Triton matmul 实现时:
+#   - 小/中等矩阵 (M,N < 2048): 融合收益 10-30%，因为 element-wise ops
+#     的 HBM 读写占整体延迟的比例较大
+#   - 大矩阵 (M,N >= 2048, K 大): matmul 是 compute-bound，融合收益
+#     降至 5-10%，因为 bias+gelu 的 HBM 开销相对 matmul 微乎其微
+#   - Fusion 的绝对收益 = 省掉 2 次 (M×N) 级别的 HBM 读写
+#     ≈ (2 × M × N × 2 bytes) / HBM_bandwidth
+#
+# --- 为什么之前 fused 比 unfused 慢 ---
+# 旧版本只有 4 个 autotune 配置，搜索空间不足导致 matmul 部分选不到
+# 最优 tile 尺寸，matmul 本身就跑得慢。同时 unfused baseline 用了
+# cuBLAS (`a @ b`)，cuBLAS 的手写汇编比 Triton 编译器生成的代码
+# 快 20-30%——融合省下的内存带宽根本填不平 matmul 的性能差距。
+#
+# 解决方案:
+#   1. 把 autotune 配置扩展到与 02 一致 (20+ 配置) ← 已修复
+#   2. 增加 ``unfused_triton_matmul_bias_act`` 作为公平 baseline，
+#      对比时同时展示 cuBLAS unfused / Triton unfused / Triton fused
+#
+# --- 何时融合有收益 ---
+# - Matmul 本身的实现质量接近 (Triton vs Triton, 而非 Triton vs cuBLAS)
+# - 矩阵不是特别大 (M,N < 4096, K < 4096)，matmul 还没完全 compute-bound
+# - Epilogue 操作越多 (bias + gelu + dropout + residual)，融合收益越大
+# - 参考: NVIDIA cuBLASLt 的 epilogue、CUTLASS 的 epilogue visitor
+#         都支持 fused epilogue，收益在 10-30%
+#
 # - [COMPILER] ACTIVATION=constexpr 使编译器在编译时消除所有 if-elif 分支:
 #   - 每个 activation type 生成一份专用的 PTX (零运行时开销)
 #   - 不同 activation 的 kernel 在 cache 中分别存储
@@ -265,8 +404,6 @@ def main():
 #   - GELU: tanh 近似需要 ~5 条指令 → 依然远小于 matmul
 #   - SiLU: sigmoid + multiply → ~10 条指令
 # - [GPU] bias load 被 BLOCK_M 个线程共享，L1 cache 命中率 ≈ 100%
-# - 实际 GPU kernel 还常融合 dropout、residual add 等操作
-# - 参考: NVIDIA cuBLASLt 的 epilogue、CUTLASS 的 epilogue visitor
 
 
 if __name__ == "__main__":

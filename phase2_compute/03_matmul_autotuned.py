@@ -17,8 +17,10 @@ from triton.testing import do_bench
 
 @triton.autotune(
     configs=[
-        triton.Config({"BLOCK_M": m, "BLOCK_N": n, "BLOCK_K": k, "GROUP_M": g},
-                       num_warps=w, num_stages=s)
+        triton.Config(
+            {"BLOCK_M": m, "BLOCK_N": n, "BLOCK_K": k, "GROUP_M": g},
+            num_warps=w, num_stages=s,
+        )
         for m in [64, 128, 256]
         for n in [64, 128, 256]
         for k in [32, 64]
@@ -26,7 +28,9 @@ from triton.testing import do_bench
         for w in [4, 8]
         for s in [2, 3, 4]
         # Prune invalid combos
-        if not (w == 4 and s > 2)          # num_warps=4 时 stage 不宜太多
+        # NOTE: removed "w==4 and s>2" — 02_matmul_tiled proved that w=4,s=3 is
+        #   optimal for many small/medium shapes (e.g. 256³, 2048³).  Excluding it
+        #   forced the autotuner to pick worse configs.
         if not (w == 4 and m * n > 128 * 128)  # warp 太少时不处理大 tile
         if not (g > 1 and m < 128)         # GROUP_M 对小 tile 意义不大
     ],
@@ -80,6 +84,12 @@ def matmul_autotuned_kernel(
     pid_m = first_pid_m + (pid_in_group % group_size_m)
     pid_n = pid_in_group // group_size_m
 
+    # ---- Integer range hints (帮助编译器优化地址计算) ----
+    # [COMPILER] tl.assume 告诉后端这些变量非负，编译器可以简化
+    # 地址表达式的整数运算（消除符号扩展、简化边界检查）
+    tl.assume(pid_m >= 0)
+    tl.assume(pid_n >= 0)
+
     # ---- 正常 tiled GEMM 逻辑 ----
     offs_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
     offs_n = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
@@ -87,7 +97,7 @@ def matmul_autotuned_kernel(
     # 累加器: [BLOCK_M, BLOCK_N]，使用 fp32 避免精度损失
     acc = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
 
-    # 沿 K 维迭代
+    # 沿 K 维迭代（每次迭代独立计算地址，编译器可自由重排做 software pipelining）
     for k in range(0, K, BLOCK_K):
         offs_k = k + tl.arange(0, BLOCK_K)
 
@@ -179,16 +189,24 @@ def main():
 
 # PERFORMANCE NOTES
 # =================
-# - GROUP_M swizzling 主要改善中等规模 GEMM (M=1024-4096) 的 L2 cache 命中率
-# - 对很小的 GEMM (M<256): L2 命中率本来就不高，swizzling 收益不大
-# - 对很大的 GEMM (M>8192): 每个 program 只处理一小部分，swizzling 帮助有限
-# - [COMPILER] 这个实现的 autotune 空间有 3×3×2×3×2×3 = 324 种可能配置，
-#   但经过 prune 后约 100-150 种。第一次运行会比较慢（JIT 每个配置都要编译），
-#   后续运行命中 cache 就快了。
-# - 与 02_matmul_tiled.py 的关键区别:
-#   1. GROUP_M swizzling — 更好的 L2 cache 局部性
-#   2. 更大的搜索空间 — 更多 BLOCK 尺寸组合
-#   3. 1D grid — 通过 GROUP_M 映射到 2D tile 空间
+# - GROUP_M swizzling 主要改善中等/大 GEMM 的 L2 cache 命中率，尤其 tall-skinny
+#   矩阵（大 M 小 N 或反之）。对于方阵，与 2D grid 差异不大。
+#
+# - Pruning 规则（经验教训）:
+#   1. "w=4, s>2" 这条规则已被移除 — 02 实测证明 w=4, s=3 在 256³, 2048³
+#      等 shape 上是最优的，排除它会强制 autotuner 选次优配置
+#   2. "w=4, mn > 128×128" 保留 — 4 warps 处理超大 tile 寄存器压力过大
+#   3. "g>1, m<128" 保留 — GROUP_M 对小 tile 只有开销没有收益
+#
+# - 03 vs 02 适用场景:
+#   | 场景                    | 推荐  | 原因                              |
+#   |-------------------------|-------|-----------------------------------|
+#   | 小矩阵 (<1024)          | 02    | 1D grid 重映射开销 > swizzle 收益 |
+#   | 方阵 (1024-4096)       | 02/03 | 差异不大                           |
+#   | tall-skinny (大 M)     | 03    | GROUP_M 改善 L2 cache             |
+#   | 超大 K (FFN up/down)   | 03    | 更大搜索空间找到更好的 BLOCK_K    |
+#
+# - [COMPILER] autotune 空间: 3×3×2×3×2×3 = 324 可能配置，prune 后约 150-200。
 
 
 if __name__ == "__main__":

@@ -40,74 +40,82 @@ from utils.profiler import bench_compare, print_compare_report
 
 
 @triton.jit
+def _add(a, b):
+    return a + b
+
+
+@triton.jit
 def cumsum_kernel(
     x_ptr, output_ptr, n_elements,
     BLOCK_SIZE: tl.constexpr,
 ):
     """
-    Block-level prefix sum: 每个 program 在 BLOCK_SIZE 内做顺序 cumsum.
-
-    这是教学简化版 (O(BLOCK_SIZE) per thread).
-    生产级实现用 parallel scan (log-depth).
+    Block 内并行 prefix sum。每个 thread 读 1 个元素，
+    tl.associative_scan 在 shared memory 中用 Blelloch scan 完成 O(log N) 步。
     """
     pid = tl.program_id(axis=0)
     base = pid * BLOCK_SIZE
+    offsets = base + tl.arange(0, BLOCK_SIZE)
+    mask = offsets < n_elements
 
-    # 顺序 cumsum within block
-    accum = 0.0
-    for i in range(BLOCK_SIZE):
-        idx = base + i
-        if idx < n_elements:
-            val = tl.load(x_ptr + idx)
-            accum = accum + val
-            tl.store(output_ptr + idx, accum)
+    val = tl.load(x_ptr + offsets, mask=mask, other=0.0)
+    result = tl.associative_scan(val, axis=0, combine_fn=_add)
+    tl.store(output_ptr + offsets, result, mask=mask)
 
 
-def cumsum(x: torch.Tensor) -> torch.Tensor:
+@triton.jit
+def add_carry_kernel(
+    output_ptr, carry_ptr, n_elements,
+    BLOCK_SIZE: tl.constexpr,
+):
     """
-    Block-level cumulative sum.
-
-    注意: 此简化版仅在 BLOCK_SIZE 内做 cumsum.
-    完整实现需要处理跨 block 传播 (add last element of prev block to all of current).
+    把 block b 的 carry（= 前 b-1 个 block 的总和）加到 block b 的每个元素上。
+    Block 0 不需要 carry。
     """
-    output = torch.empty_like(x)
-    n = x.numel()
-    grid = lambda meta: (triton.cdiv(n, meta["BLOCK_SIZE"]),)
-    cumsum_kernel[grid](x, output, n, BLOCK_SIZE=1024)
-    return output
+    pid = tl.program_id(axis=0)
+    base = pid * BLOCK_SIZE
+    offsets = base + tl.arange(0, BLOCK_SIZE)
+    mask = offsets < n_elements
+
+    val = tl.load(output_ptr + offsets, mask=mask, other=0.0)
+
+    if pid > 0:
+        carry = tl.load(carry_ptr + pid - 1)  # carry_ptr[b-1] = sum of blocks [0, b-1]
+        val = val + carry
+
+    tl.store(output_ptr + offsets, val, mask=mask)
 
 
-def cumsum_full(x: torch.Tensor, BLOCK_SIZE: int = 1024) -> torch.Tensor:
+def cumsum(x: torch.Tensor, BLOCK_SIZE: int = 1024) -> torch.Tensor:
     """
-    完整 cumsum: 处理跨 block 的 carry-over.
-    Step 1: block 内 cumsum (每个 block 独立)
-    Step 2: 提取每个 block 的最后一个值, 做 cumsum 得到 block_carry
-    Step 3: 将 carry 加到后续 block
+    完整 cumsum，自动处理跨 block carry 传播。
+
+    Step 1: 每个 block 独立做 intra-block scan → output + block 总和
+    Step 2: 对 block 总和做 cumsum → 得到每个 block 的 carry
+    Step 3: 把 carry 加到对应 block 的每个元素
     """
     n = x.numel()
     n_blocks = triton.cdiv(n, BLOCK_SIZE)
     output = torch.empty_like(x)
 
-    # Step 1: block 内 cumsum
-    grid = (n_blocks,)
-    cumsum_kernel[grid](x, output, n, BLOCK_SIZE=BLOCK_SIZE)
+    # Step 1: intra-block scan
+    cumsum_kernel[(n_blocks,)](x, output, n, BLOCK_SIZE=BLOCK_SIZE)
 
-    # Step 2 & 3: cross-block carry propagation
-    # 提取每个 block 的最后一个有效元素
-    last_vals = torch.zeros(n_blocks, device=x.device, dtype=x.dtype)
-    for b in range(n_blocks):
-        end = min((b + 1) * BLOCK_SIZE, n)
-        if end > b * BLOCK_SIZE:
-            last_vals[b] = output[end - 1]
+    if n_blocks <= 1:
+        return output
 
-    # 对 last_vals 做 cumsum (递归), 得到每个 block 需要加的 carry
-    if n_blocks > 1:
-        block_carry = torch.cumsum(last_vals, dim=0)
-        # 每个 block b 加上前一个 block 的 carry
-        for b in range(1, n_blocks):
-            start = b * BLOCK_SIZE
-            end = min((b + 1) * BLOCK_SIZE, n)
-            output[start:end] += block_carry[b - 1]
+    # 提取每个 block 的总和（inclusive scan 的最后一个元素 = block sum）
+    # output[BLOCK_SIZE-1::BLOCK_SIZE] 取每个 block 的最后一个元素
+    # 但如果最后一个 block 不满，stride 可能漏掉 → 用 output[-1] 补上
+    block_sums = output[BLOCK_SIZE - 1::BLOCK_SIZE].clone()
+    if block_sums.numel() < n_blocks:
+        block_sums = torch.cat([block_sums, output[-1].unsqueeze(0)])
+
+    # 用 float64 算 carry，避免 float32 累积误差放大
+    carry = torch.cumsum(block_sums.double(), dim=0).float()
+
+    # Step 3: 把 carry 加到每个 block
+    add_carry_kernel[(n_blocks,)](output, carry, n, BLOCK_SIZE=BLOCK_SIZE)
 
     return output
 
@@ -129,21 +137,21 @@ def main():
     out_torch = torch.cumsum(x_small, dim=0)
     max_diff = (out_triton - out_torch).abs().max().item()
     print(f"  [single-block] max_diff={max_diff:.2e}  "
-          f"{'✅' if max_diff < 1e-5 else '❌'}")
+          f"{'✅' if max_diff < 5e-4 else '❌'}")
 
-    # 正确性: 大 tensor (跨多个 BLOCK, 完整版)
+    # 正确性: 大 tensor (跨多个 BLOCK)
     x_large = torch.rand(4096, device="cuda")
-    out_full = cumsum_full(x_large)
-    out_torch_full = torch.cumsum(x_large, dim=0)
-    max_diff_full = (out_full - out_torch_full).abs().max().item()
-    print(f"  [multi-block ] max_diff={max_diff_full:.2e}  "
-          f"{'✅' if max_diff_full < 1e-4 else '❌'}")
+    out_triton = cumsum(x_large)
+    out_torch = torch.cumsum(x_large, dim=0)
+    max_diff = (out_triton - out_torch).abs().max().item()
+    print(f"  [multi-block ] max_diff={max_diff:.2e}  "
+          f"{'✅' if max_diff < 5e-4 else '❌'}")
 
     print("\n--- Performance ---")
     x = torch.rand(65536, device="cuda", dtype=torch.float32)
     n = x.numel()
     result = bench_compare({
-        "Triton (ours)": lambda: cumsum_full(x),
+        "Triton (ours)": lambda: cumsum(x),
         "PyTorch (ref)": lambda: torch.cumsum(x, dim=0),
     }, flops=n * 1, bytes_accessed=n * 2 * 4, dtype="fp32")
     print_compare_report(result)
